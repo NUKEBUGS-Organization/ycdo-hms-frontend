@@ -1,0 +1,430 @@
+// ============================================================================
+// YCDO HMS — Reception + Pharmacy domain
+// This schema runs on the BRANCH-LOCAL Postgres (one per hospital).
+// Every branch DB holds only its own branch's data.
+//
+// Conventions:
+//   - UUID primary keys everywhere (generated client-side, safe to sync)
+//   - Decimal for money, never Float
+//   - syncedAt: null = not yet pushed to VPS. The push job reads this.
+//   - Mirror models (Branch, Staff, Item, ItemCategory) are PULLED from the
+//     org backend and are READ-ONLY at the branch. Never write to them locally.
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+enum PatientCategory {
+  DESERVING // cheapest tier — the one the legacy PHP was mispricing
+  POOR
+  MEMBER
+  GENERAL // most expensive tier
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum TokenStatus {
+  ACTIVE
+  RETURNED // fully reversed via TokenReturn
+  CANCELLED
+}
+
+enum MovementReason {
+  RECEIPT // stock received from a store transfer
+  SALE // dispensed against a token
+  SALE_RETURN // token returned, stock back on shelf
+  RETURN_TO_STORE // sent back to main store
+  ADJUSTMENT // audit correction, expiry, damage
+}
+
+enum TransferStatus {
+  ISSUED // committed at the store (org tier), stock in transit
+  RECEIVED // branch confirmed receipt
+  CANCELLED
+}
+
+enum ReceivableStatus {
+  OPEN
+  PARTIALLY_PAID
+  SETTLED
+  WRITTEN_OFF
+}
+
+// ============================================================================
+// MIRRORS — pulled from the org backend, read-only at the branch
+// ============================================================================
+
+model Branch {
+  id      String  @id @db.Uuid
+  code    String  @unique // short prefix used in MR / token numbers, e.g. "CH"
+  name    String
+  phone   String?
+  address String?
+  active  Boolean @default(true)
+
+  mirroredAt DateTime @default(now())
+
+  patients   Patient[]
+  tokens     Token[]
+  movements  StockMovement[]
+  stock      BranchStock[]
+  transfers  Transfer[]
+  counters   TokenCounter[]
+  receivables Receivable[]
+
+  @@map("branches")
+}
+
+model Staff {
+  id          String  @id @db.Uuid // HRMS employee id — same id, no remapping
+  fullName    String
+  designation String?
+  isDoctor    Boolean @default(false)
+  active      Boolean @default(true)
+
+  mirroredAt DateTime @default(now())
+
+  tokensAsDoctor Token[] @relation("TokenDoctor")
+
+  @@map("staff")
+}
+
+model ItemCategory {
+  id   String @id @db.Uuid
+  name String
+
+  // Replaces the legacy string-matching on category names ('TEST', 'VIAL', ...).
+  // Services, lab tests and imaging do not move stock.
+  tracksStock Boolean @default(true)
+
+  mirroredAt DateTime @default(now())
+
+  items Item[]
+
+  @@map("item_categories")
+}
+
+model Item {
+  id         String  @id @db.Uuid
+  categoryId String  @db.Uuid
+  name       String
+  barcode    String?
+
+  // Item-level override of the category default. Explicit column — never
+  // infer stock behaviour from the name again.
+  tracksStock Boolean @default(true)
+
+  // All four tiers. The legacy item_by_doctor had no deserving column at all,
+  // which is why deserving patients were charged the general rate.
+  purchasePrice   Decimal @db.Decimal(12, 2)
+  priceDeserving  Decimal @db.Decimal(12, 2)
+  pricePoor       Decimal @db.Decimal(12, 2)
+  priceMember     Decimal @db.Decimal(12, 2)
+  priceGeneral    Decimal @db.Decimal(12, 2)
+
+  active Boolean @default(true)
+
+  mirroredAt DateTime @default(now())
+
+  category      ItemCategory    @relation(fields: [categoryId], references: [id])
+  tokenLines    TokenLine[]
+  movements     StockMovement[]
+  branchStock   BranchStock[]
+  transferLines TransferLine[]
+
+  @@index([name])
+  @@index([barcode])
+  @@map("items")
+}
+
+// ============================================================================
+// PATIENTS — owned by the branch
+// ============================================================================
+
+model Patient {
+  id       String @id @default(uuid()) @db.Uuid
+  branchId String @db.Uuid
+
+  // Branch-scoped, human-facing: "CH-00412". Unique per branch by construction,
+  // so no cross-branch coordination is ever needed.
+  mrNo String
+
+  name           String
+  gender         Gender
+  dateOfBirth    DateTime? @db.Date
+  ageYears       Int? // kept because reception often has age, not DOB
+  phone          String?
+  cnic           String?   @db.VarChar(15)
+  address        String?
+  guardianName   String?
+  guardianPhone  String?
+
+  // Set by a matcher on the VPS when this patient is believed to be the same
+  // person as a record at another branch. Never merges rows — links them.
+  linkedPatientId String? @db.Uuid
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  createdBy String    @db.Uuid
+  syncedAt  DateTime?
+
+  branch Branch  @relation(fields: [branchId], references: [id])
+  tokens Token[]
+
+  @@unique([branchId, mrNo])
+  @@index([phone])
+  @@index([cnic])
+  @@index([name])
+  @@index([syncedAt])
+  @@map("patients")
+}
+
+// ============================================================================
+// TOKENS — the reception + pharmacy sale document
+// ============================================================================
+
+// One row per branch per day. Locked inside the save transaction to allocate
+// the next token number. Scoped to branch+date, so two branches issuing
+// token 124 on the same day is correct, not a collision.
+model TokenCounter {
+  branchId String   @db.Uuid
+  date     DateTime @db.Date
+  lastNo   Int      @default(0)
+
+  branch Branch @relation(fields: [branchId], references: [id])
+
+  @@id([branchId, date])
+  @@map("token_counters")
+}
+
+model Token {
+  id       String @id @default(uuid()) @db.Uuid
+  branchId String @db.Uuid
+
+  tokenNo   Int // sequential within branch+date
+  tokenDate DateTime @db.Date
+
+  patientId String @db.Uuid
+  doctorId  String @db.Uuid
+
+  category PatientCategory // determines which Item price column is used
+
+  // Money. Total is the sum of line totals — assert this in the service layer.
+  totalAmount    Decimal @db.Decimal(12, 2)
+  amountReceived Decimal @db.Decimal(12, 2)
+
+  // Second/follow-up visit chained to an earlier token (legacy previous_tokan_no)
+  previousTokenId String? @db.Uuid
+
+  status TokenStatus @default(ACTIVE)
+
+  createdAt DateTime  @default(now())
+  createdBy String    @db.Uuid
+  syncedAt  DateTime?
+
+  branch     Branch      @relation(fields: [branchId], references: [id])
+  patient    Patient     @relation(fields: [patientId], references: [id])
+  doctor     Staff       @relation("TokenDoctor", fields: [doctorId], references: [id])
+  lines      TokenLine[]
+  receivable Receivable?
+  return     TokenReturn?
+
+  @@unique([branchId, tokenDate, tokenNo])
+  @@index([branchId, createdAt])
+  @@index([patientId])
+  @@index([syncedAt])
+  @@map("tokens")
+}
+
+model TokenLine {
+  id      String @id @default(uuid()) @db.Uuid
+  tokenId String @db.Uuid
+  itemId  String @db.Uuid
+
+  // Dosage inputs. quantity = fixDose > 0 ? fixDose : dose * feed * days
+  dose    Int     @default(0)
+  feed    Decimal @default(0) @db.Decimal(6, 2)
+  days    Int     @default(0)
+  fixDose Int     @default(0)
+
+  quantity Decimal @db.Decimal(12, 2)
+
+  // SNAPSHOTS — resolved at save time and never recomputed. A price change
+  // next month must not rewrite last month's revenue. The legacy code got
+  // this right; keep it.
+  unitPrice     Decimal @db.Decimal(12, 2)
+  lineTotal     Decimal @db.Decimal(12, 2)
+  purchasePrice Decimal @db.Decimal(12, 2) // for COGS
+
+  token Token @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  item  Item  @relation(fields: [itemId], references: [id])
+
+  @@index([tokenId])
+  @@index([itemId])
+  @@map("token_lines")
+}
+
+// Refund / reversal as a separate document — never mutate the original token.
+model TokenReturn {
+  id      String @id @default(uuid()) @db.Uuid
+  tokenId String @unique @db.Uuid
+
+  reason        String
+  approvedBy    String   @db.Uuid
+  amountRefunded Decimal @db.Decimal(12, 2)
+  restockedToBranch Boolean @default(true)
+
+  createdAt DateTime  @default(now())
+  createdBy String    @db.Uuid
+  syncedAt  DateTime?
+
+  token Token @relation(fields: [tokenId], references: [id])
+
+  @@index([syncedAt])
+  @@map("token_returns")
+}
+
+// Partial payment at the counter becomes a receivable (legacy branch_pending_details)
+model Receivable {
+  id       String @id @default(uuid()) @db.Uuid
+  branchId String @db.Uuid
+  tokenId  String @unique @db.Uuid
+
+  amountDue  Decimal @db.Decimal(12, 2)
+  amountPaid Decimal @default(0) @db.Decimal(12, 2)
+
+  guardianName  String?
+  guardianPhone String?
+  recommendedBy String?
+  promisedDate  DateTime? @db.Date
+
+  status ReceivableStatus @default(OPEN)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  createdBy String    @db.Uuid
+  syncedAt  DateTime?
+
+  branch Branch @relation(fields: [branchId], references: [id])
+  token  Token  @relation(fields: [tokenId], references: [id])
+
+  @@index([branchId, status])
+  @@index([syncedAt])
+  @@map("receivables")
+}
+
+// ============================================================================
+// STOCK — branch-owned, ledger-based
+// ============================================================================
+
+// Cached balance for fast reads and in-transaction negative checks.
+// Authoritative history lives in StockMovement; this must only ever be
+// updated in the same transaction as the movement that changes it.
+model BranchStock {
+  branchId String  @db.Uuid
+  itemId   String  @db.Uuid
+  quantity Decimal @default(0) @db.Decimal(12, 2)
+  minLimit Int     @default(0)
+  maxLimit Int     @default(0)
+
+  updatedAt DateTime @updatedAt
+
+  branch Branch @relation(fields: [branchId], references: [id])
+  item   Item   @relation(fields: [itemId], references: [id])
+
+  @@id([branchId, itemId])
+  @@map("branch_stock")
+}
+
+// The ledger. Balance is derivable from this; nothing else moves stock.
+model StockMovement {
+  id       String @id @default(uuid()) @db.Uuid
+  branchId String @db.Uuid
+  itemId   String @db.Uuid
+
+  // Signed: negative for SALE / RETURN_TO_STORE, positive for RECEIPT / SALE_RETURN
+  delta  Decimal        @db.Decimal(12, 2)
+  reason MovementReason
+
+  // Polymorphic pointer to the document that caused this movement
+  // (refType = 'TOKEN' | 'TRANSFER' | 'RETURN' | 'ADJUSTMENT')
+  refType String
+  refId   String @db.Uuid
+
+  note String?
+
+  createdAt DateTime  @default(now())
+  createdBy String    @db.Uuid
+  syncedAt  DateTime?
+
+  branch Branch @relation(fields: [branchId], references: [id])
+  item   Item   @relation(fields: [itemId], references: [id])
+
+  @@index([branchId, itemId, createdAt])
+  @@index([refType, refId])
+  @@index([syncedAt])
+  @@map("stock_movements")
+}
+
+// ============================================================================
+// TRANSFERS — main store (org tier, online) issues to branch (offline)
+// Pulled DOWN in ISSUED state. The branch never decrements the store.
+// ============================================================================
+
+model Transfer {
+  id       String @id @db.Uuid // id generated by the org backend
+  branchId String @db.Uuid // destination — always this branch
+
+  transferNo String // human-facing document no. written on the paper sheet
+  status     TransferStatus
+
+  issuedAt DateTime
+  issuedBy String @db.Uuid
+
+  // Set when the pharmacist confirms receipt at the branch
+  receivedAt DateTime?
+  receivedBy String?   @db.Uuid
+
+  pulledAt DateTime  @default(now())
+  syncedAt DateTime? // receiving pushed back up
+
+  branch Branch         @relation(fields: [branchId], references: [id])
+  lines  TransferLine[]
+
+  @@unique([branchId, transferNo])
+  @@index([status])
+  @@index([syncedAt])
+  @@map("transfers")
+}
+
+model TransferLine {
+  id         String @id @db.Uuid
+  transferId String @db.Uuid
+  itemId     String @db.Uuid
+
+  issuedQuantity   Decimal  @db.Decimal(12, 2)
+  receivedQuantity Decimal? @db.Decimal(12, 2) // null until received
+
+  // issued - received, computed on confirm. Non-zero needs someone to look.
+  varianceNote String?
+
+  transfer Transfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  item     Item     @relation(fields: [itemId], references: [id])
+
+  @@index([transferId])
+  @@map("transfer_lines")
+}
