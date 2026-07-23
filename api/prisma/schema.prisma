@@ -57,6 +57,13 @@ enum TransferStatus {
   CANCELLED
 }
 
+enum ReservationStatus {
+  ACTIVE    // holding stock for an in-progress cart
+  CONSUMED  // token saved; became a SALE movement
+  RELEASED  // receptionist removed the line from the cart
+  EXPIRED   // cart abandoned; swept back automatically
+}
+
 enum ReceivableStatus {
   OPEN
   PARTIALLY_PAID
@@ -84,6 +91,7 @@ model Branch {
   stock      BranchStock[]
   transfers  Transfer[]
   counters   TokenCounter[]
+  reservations StockReservation[]
   receivables Receivable[]
 
   @@map("branches")
@@ -145,6 +153,7 @@ model Item {
   movements     StockMovement[]
   branchStock   BranchStock[]
   transferLines TransferLine[]
+  reservations  StockReservation[]
 
   @@index([name])
   @@index([barcode])
@@ -348,6 +357,45 @@ model BranchStock {
 
   @@id([branchId, itemId])
   @@map("branch_stock")
+}
+
+// Provisional hold placed when a line is added to an in-progress cart.
+//
+// Availability at any counter = BranchStock.quantity
+//                             - SUM(quantity WHERE status = ACTIVE AND expiresAt > now)
+//
+// This replaces the legacy behaviour of decrementing real stock the moment a
+// medicine was added to the cart. That gave live availability across counters
+// but destroyed stock permanently on every abandonment path that was not an
+// explicit remove (crash, closed tab, power cut, staff walking away).
+// A reservation is self-healing: it expires on its own and the stock returns.
+model StockReservation {
+  id       String @id @default(uuid()) @db.Uuid
+  branchId String @db.Uuid
+  itemId   String @db.Uuid
+
+  quantity Decimal @db.Decimal(12, 2)
+
+  // Groups all reservations belonging to one in-progress token.
+  // Generated client-side when the receptionist starts a new token.
+  cartId String @db.Uuid
+
+  status    ReservationStatus @default(ACTIVE)
+  expiresAt DateTime
+
+  // Set when the cart is saved — links the hold to the token that consumed it.
+  tokenId String? @db.Uuid
+
+  createdAt DateTime @default(now())
+  createdBy String   @db.Uuid
+
+  branch Branch @relation(fields: [branchId], references: [id])
+  item   Item   @relation(fields: [itemId], references: [id])
+
+  // Availability query hits this constantly — keep it covered.
+  @@index([branchId, itemId, status, expiresAt])
+  @@index([cartId])
+  @@map("stock_reservations")
 }
 
 // The ledger. Balance is derivable from this; nothing else moves stock.

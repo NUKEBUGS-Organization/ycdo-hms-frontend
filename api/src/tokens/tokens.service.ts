@@ -1,0 +1,488 @@
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import {
+  MovementReason,
+  Prisma,
+  ReceivableStatus,
+  TokenStatus,
+} from '@prisma/client';
+import { randomUUID } from 'crypto';
+import { resolveUnitPrice } from '../catalogue/pricing';
+import { StockService } from '../catalogue/stock.service';
+import { BranchConfig } from '../common/config/branch.config';
+import { SYSTEM_ACTOR_ID } from '../common/constants';
+import { pktDateOnly, nowPkt } from '../common/utils/date.util';
+import {
+  multiplyMoney,
+  roundMoney,
+  sumMoney,
+} from '../common/utils/money.util';
+import { PatientsService } from '../patients/patients.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { CreateTokenDto } from './dto/create-token.dto';
+import { ReturnTokenDto } from './dto/return-token.dto';
+
+const tokenInclude = {
+  lines: {
+    include: {
+      item: {
+        select: { id: true, name: true, barcode: true, tracksStock: true },
+      },
+    },
+  },
+  patient: true,
+  doctor: { select: { id: true, fullName: true, designation: true } },
+  receivable: true,
+  return: true,
+} satisfies Prisma.TokenInclude;
+
+@Injectable()
+export class TokensService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly branch: BranchConfig,
+    private readonly patients: PatientsService,
+    private readonly stock: StockService,
+  ) {}
+
+  async create(dto: CreateTokenDto) {
+    if (!dto.patientId && !dto.newPatient) {
+      throw new BadRequestException(
+        'Either patientId or newPatient is required',
+      );
+    }
+    if (dto.patientId && dto.newPatient) {
+      throw new BadRequestException(
+        'Provide patientId or newPatient, not both',
+      );
+    }
+
+    const amountReceived = new Prisma.Decimal(dto.amountReceived);
+    if (amountReceived.lt(0)) {
+      throw new BadRequestException('amountReceived cannot be negative');
+    }
+
+    const branchId = this.branch.branchId;
+    const today = pktDateOnly(nowPkt());
+    const itemIds = [...new Set(dto.lines.map((l) => l.itemId))];
+
+    return this.prisma.$transaction(async (tx) => {
+      // --- 1. Patient ---
+      let patientId: string;
+      if (dto.newPatient) {
+        const patient = await this.patients.createWithTx(tx, dto.newPatient);
+        patientId = patient.id;
+      } else {
+        const existing = await tx.patient.findFirst({
+          where: { id: dto.patientId!, branchId },
+          select: { id: true },
+        });
+        if (!existing) {
+          throw new NotFoundException(`Patient ${dto.patientId} not found`);
+        }
+        patientId = existing.id;
+      }
+
+      const doctor = await tx.staff.findFirst({
+        where: { id: dto.doctorId, active: true },
+        select: { id: true },
+      });
+      if (!doctor) {
+        throw new NotFoundException(`Doctor ${dto.doctorId} not found`);
+      }
+
+      if (dto.previousTokenId) {
+        const prev = await tx.token.findFirst({
+          where: { id: dto.previousTokenId, branchId },
+          select: { id: true },
+        });
+        if (!prev) {
+          throw new NotFoundException(
+            `Previous token ${dto.previousTokenId} not found`,
+          );
+        }
+      }
+
+      const items = await tx.item.findMany({
+        where: { id: { in: itemIds }, active: true },
+      });
+      if (items.length !== itemIds.length) {
+        const found = new Set(items.map((i) => i.id));
+        const missing = itemIds.filter((id) => !found.has(id));
+        throw new NotFoundException(`Items not found: ${missing.join(', ')}`);
+      }
+      const itemById = new Map(items.map((i) => [i.id, i]));
+
+      // --- 2. Token number (branch + date) ---
+      await tx.$executeRaw`
+        INSERT INTO token_counters ("branchId", date, "lastNo")
+        VALUES (${branchId}::uuid, ${today}::date, 0)
+        ON CONFLICT ("branchId", date) DO NOTHING
+      `;
+
+      const counters = await tx.$queryRaw<{ lastNo: number }[]>`
+        SELECT "lastNo" FROM token_counters
+        WHERE "branchId" = ${branchId}::uuid AND date = ${today}::date
+        FOR UPDATE
+      `;
+      const tokenNo = (counters[0]?.lastNo ?? 0) + 1;
+
+      await tx.$executeRaw`
+        UPDATE token_counters
+        SET "lastNo" = ${tokenNo}
+        WHERE "branchId" = ${branchId}::uuid AND date = ${today}::date
+      `;
+
+      // --- 3. Line pricing ---
+      const lineData = dto.lines.map((line) => {
+        const item = itemById.get(line.itemId)!;
+        const fixDose = line.fixDose ?? 0;
+        const quantity =
+          fixDose > 0
+            ? new Prisma.Decimal(fixDose)
+            : multiplyMoney(
+                new Prisma.Decimal(line.dose),
+                multiplyMoney(new Prisma.Decimal(line.feed), line.days),
+              );
+
+        if (quantity.lte(0)) {
+          throw new BadRequestException(
+            `Line quantity must be positive for item ${item.name}`,
+          );
+        }
+
+        const unitPrice = resolveUnitPrice(item, dto.category);
+        const lineTotal = roundMoney(multiplyMoney(quantity, unitPrice));
+
+        return {
+          itemId: item.id,
+          dose: line.dose,
+          feed: new Prisma.Decimal(line.feed),
+          days: line.days,
+          fixDose,
+          quantity,
+          unitPrice,
+          lineTotal,
+          purchasePrice: item.purchasePrice,
+          tracksStock: item.tracksStock,
+          itemName: item.name,
+        };
+      });
+
+      // --- 4. Total ---
+      const totalAmount = roundMoney(
+        sumMoney(...lineData.map((l) => l.lineTotal)),
+      );
+
+      const tokenId = randomUUID();
+
+      await tx.token.create({
+        data: {
+          id: tokenId,
+          branchId,
+          tokenNo,
+          tokenDate: today,
+          patientId,
+          doctorId: dto.doctorId,
+          category: dto.category,
+          totalAmount,
+          amountReceived,
+          previousTokenId: dto.previousTokenId,
+          createdBy: SYSTEM_ACTOR_ID,
+          lines: {
+            create: lineData.map((l) => ({
+              itemId: l.itemId,
+              dose: l.dose,
+              feed: l.feed,
+              days: l.days,
+              fixDose: l.fixDose,
+              quantity: l.quantity,
+              unitPrice: l.unitPrice,
+              lineTotal: l.lineTotal,
+              purchasePrice: l.purchasePrice,
+            })),
+          },
+        },
+      });
+
+      const persisted = await tx.tokenLine.findMany({
+        where: { tokenId },
+        select: { lineTotal: true },
+      });
+      const persistedSum = roundMoney(
+        sumMoney(...persisted.map((l) => l.lineTotal)),
+      );
+      if (!persistedSum.equals(totalAmount)) {
+        throw new BadRequestException(
+          `totalAmount mismatch: computed ${totalAmount.toString()}, persisted ${persistedSum.toString()}`,
+        );
+      }
+
+      // --- 5. Stock movements + BranchStock ---
+      const stockLines = lineData.filter((l) => l.tracksStock);
+      if (stockLines.length > 0) {
+        // Aggregate qty per item (duplicate lines possible)
+        const needByItem = new Map<string, Prisma.Decimal>();
+        for (const line of stockLines) {
+          needByItem.set(
+            line.itemId,
+            (needByItem.get(line.itemId) ?? new Prisma.Decimal(0)).add(
+              line.quantity,
+            ),
+          );
+        }
+
+        // Lock stock rows first, then re-check availability excluding this cart.
+        for (const [itemId, needed] of needByItem) {
+          const locked = await tx.$queryRaw<{ quantity: Prisma.Decimal }[]>`
+            SELECT quantity FROM branch_stock
+            WHERE "branchId" = ${branchId}::uuid AND "itemId" = ${itemId}::uuid
+            FOR UPDATE
+          `;
+          if (locked.length === 0) {
+            const name =
+              stockLines.find((l) => l.itemId === itemId)?.itemName ?? itemId;
+            throw new ConflictException(
+              `Insufficient stock for item ${name}: available 0, requested ${needed.toString()}`,
+            );
+          }
+        }
+
+        const available = await this.stock.getAvailable(
+          [...needByItem.keys()],
+          { db: tx, excludeCartId: dto.cartId },
+        );
+
+        for (const [itemId, needed] of needByItem) {
+          const avail = available.get(itemId) ?? new Prisma.Decimal(0);
+          if (avail.lt(needed)) {
+            const name =
+              stockLines.find((l) => l.itemId === itemId)?.itemName ?? itemId;
+            throw new ConflictException(
+              `Insufficient stock for item ${name}: available ${avail.toString()}, requested ${needed.toString()}`,
+            );
+          }
+        }
+
+        for (const line of stockLines) {
+          await tx.stockMovement.create({
+            data: {
+              branchId,
+              itemId: line.itemId,
+              delta: line.quantity.neg(),
+              reason: MovementReason.SALE,
+              refType: 'TOKEN',
+              refId: tokenId,
+              createdBy: SYSTEM_ACTOR_ID,
+            },
+          });
+
+          await tx.branchStock.update({
+            where: {
+              branchId_itemId: { branchId, itemId: line.itemId },
+            },
+            data: {
+              quantity: { decrement: line.quantity },
+            },
+          });
+        }
+      }
+
+      // --- 6. Consume cart reservations ---
+      await tx.stockReservation.updateMany({
+        where: {
+          branchId,
+          cartId: dto.cartId,
+          status: 'ACTIVE',
+        },
+        data: {
+          status: 'CONSUMED',
+          tokenId,
+        },
+      });
+
+      // --- 7. Receivable if underpaid ---
+      if (amountReceived.lt(totalAmount)) {
+        const amountDue = roundMoney(totalAmount.sub(amountReceived));
+        await tx.receivable.create({
+          data: {
+            branchId,
+            tokenId,
+            amountDue,
+            amountPaid: new Prisma.Decimal(0),
+            guardianName: dto.receivable?.guardianName,
+            guardianPhone: dto.receivable?.guardianPhone,
+            recommendedBy: dto.receivable?.recommendedBy,
+            promisedDate: dto.receivable?.promisedDate
+              ? pktDateOnly(dto.receivable.promisedDate)
+              : undefined,
+            status: ReceivableStatus.OPEN,
+            createdBy: SYSTEM_ACTOR_ID,
+          },
+        });
+      }
+
+      // --- 8. Print-shaped payload ---
+      return tx.token.findUniqueOrThrow({
+        where: { id: tokenId },
+        include: tokenInclude,
+      });
+    });
+  }
+
+  async findOne(id: string) {
+    const token = await this.prisma.token.findFirst({
+      where: { id, branchId: this.branch.branchId },
+      include: tokenInclude,
+    });
+    if (!token) {
+      throw new NotFoundException(`Token ${id} not found`);
+    }
+    return token;
+  }
+
+  async list(opts: {
+    date?: string;
+    patientId?: string;
+    doctorId?: string;
+    page: number;
+    limit: number;
+  }) {
+    const take = Math.min(Math.max(opts.limit, 1), 100);
+    const page = Math.max(opts.page, 1);
+    const skip = (page - 1) * take;
+
+    const where: Prisma.TokenWhereInput = {
+      branchId: this.branch.branchId,
+    };
+
+    if (opts.date) {
+      const d = new Date(opts.date);
+      if (Number.isNaN(d.getTime())) {
+        throw new BadRequestException('Invalid date');
+      }
+      where.tokenDate = pktDateOnly(d);
+    }
+    if (opts.patientId) where.patientId = opts.patientId;
+    if (opts.doctorId) where.doctorId = opts.doctorId;
+
+    const [total, data] = await this.prisma.$transaction([
+      this.prisma.token.count({ where }),
+      this.prisma.token.findMany({
+        where,
+        orderBy: [{ tokenDate: 'desc' }, { tokenNo: 'desc' }],
+        skip,
+        take,
+        include: {
+          patient: { select: { id: true, mrNo: true, name: true } },
+          doctor: { select: { id: true, fullName: true } },
+        },
+      }),
+    ]);
+
+    return { total, page, limit: take, data };
+  }
+
+  async returnToken(id: string, dto: ReturnTokenDto) {
+    const branchId = this.branch.branchId;
+    const amountRefunded = new Prisma.Decimal(dto.amountRefunded);
+    if (amountRefunded.lt(0)) {
+      throw new BadRequestException('amountRefunded cannot be negative');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const token = await tx.token.findFirst({
+        where: { id, branchId },
+        include: {
+          lines: {
+            include: {
+              item: { select: { tracksStock: true, name: true } },
+            },
+          },
+          receivable: true,
+          return: true,
+        },
+      });
+
+      if (!token) {
+        throw new NotFoundException(`Token ${id} not found`);
+      }
+      if (token.status === TokenStatus.RETURNED) {
+        throw new ConflictException(`Token ${id} is already returned`);
+      }
+      if (token.return) {
+        throw new ConflictException(`Token ${id} already has a return document`);
+      }
+
+      const tokenReturn = await tx.tokenReturn.create({
+        data: {
+          tokenId: id,
+          reason: dto.reason,
+          approvedBy: dto.approvedBy,
+          amountRefunded,
+          restockedToBranch: dto.restockToBranch,
+          createdBy: SYSTEM_ACTOR_ID,
+        },
+      });
+
+      await tx.token.update({
+        where: { id },
+        data: { status: TokenStatus.RETURNED },
+      });
+
+      if (dto.restockToBranch) {
+        for (const line of token.lines) {
+          if (!line.item.tracksStock) continue;
+
+          await tx.$queryRaw`
+            SELECT quantity FROM branch_stock
+            WHERE "branchId" = ${branchId}::uuid AND "itemId" = ${line.itemId}::uuid
+            FOR UPDATE
+          `;
+
+          await tx.stockMovement.create({
+            data: {
+              branchId,
+              itemId: line.itemId,
+              delta: line.quantity,
+              reason: MovementReason.SALE_RETURN,
+              refType: 'RETURN',
+              refId: tokenReturn.id,
+              createdBy: SYSTEM_ACTOR_ID,
+            },
+          });
+
+          await tx.branchStock.upsert({
+            where: {
+              branchId_itemId: { branchId, itemId: line.itemId },
+            },
+            create: {
+              branchId,
+              itemId: line.itemId,
+              quantity: line.quantity,
+            },
+            update: {
+              quantity: { increment: line.quantity },
+            },
+          });
+        }
+      }
+
+      if (token.receivable) {
+        await tx.receivable.update({
+          where: { id: token.receivable.id },
+          data: { status: ReceivableStatus.WRITTEN_OFF },
+        });
+      }
+
+      return tx.token.findUniqueOrThrow({
+        where: { id },
+        include: tokenInclude,
+      });
+    });
+  }
+}
