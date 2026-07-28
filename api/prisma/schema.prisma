@@ -93,6 +93,8 @@ model Branch {
   counters   TokenCounter[]
   reservations StockReservation[]
   receivables Receivable[]
+  itemPrices BranchItemPrice[]
+  registrationFees RegistrationFee[]
 
   @@map("branches")
 }
@@ -136,28 +138,56 @@ model Item {
   // infer stock behaviour from the name again.
   tracksStock Boolean @default(true)
 
-  // All four tiers. The legacy item_by_doctor had no deserving column at all,
-  // which is why deserving patients were charged the general rate.
-  purchasePrice   Decimal @db.Decimal(12, 2)
-  priceDeserving  Decimal @db.Decimal(12, 2)
-  pricePoor       Decimal @db.Decimal(12, 2)
-  priceMember     Decimal @db.Decimal(12, 2)
-  priceGeneral    Decimal @db.Decimal(12, 2)
-
   active Boolean @default(true)
 
   mirroredAt DateTime @default(now())
 
-  category      ItemCategory    @relation(fields: [categoryId], references: [id])
+  category      ItemCategory      @relation(fields: [categoryId], references: [id])
   tokenLines    TokenLine[]
   movements     StockMovement[]
   branchStock   BranchStock[]
   transferLines TransferLine[]
   reservations  StockReservation[]
+  branchPrices  BranchItemPrice[]
 
   @@index([name])
   @@index([barcode])
   @@map("items")
+}
+
+// Per-branch prices — mirrored from org, read-only at the branch.
+// Catalogue Item has no money; every sellable amount lives here.
+model BranchItemPrice {
+  branchId String @db.Uuid
+  itemId   String @db.Uuid
+
+  purchasePrice  Decimal @db.Decimal(12, 2)
+  priceDeserving Decimal @db.Decimal(12, 2)
+  pricePoor      Decimal @db.Decimal(12, 2)
+  priceMember    Decimal @db.Decimal(12, 2)
+  priceGeneral   Decimal @db.Decimal(12, 2)
+
+  mirroredAt DateTime @default(now())
+
+  branch Branch @relation(fields: [branchId], references: [id])
+  item   Item   @relation(fields: [itemId], references: [id])
+
+  @@id([branchId, itemId])
+  @@map("branch_item_prices")
+}
+
+// Flat registration token fee — per branch, per patient category (not per item/doctor).
+model RegistrationFee {
+  branchId String          @db.Uuid
+  category PatientCategory
+  amount   Decimal         @db.Decimal(12, 2)
+
+  mirroredAt DateTime @default(now())
+
+  branch Branch @relation(fields: [branchId], references: [id])
+
+  @@id([branchId, category])
+  @@map("registration_fees")
 }
 
 // ============================================================================

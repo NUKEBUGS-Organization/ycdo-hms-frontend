@@ -7,7 +7,13 @@
  */
 import 'dotenv/config';
 import { Prisma, PrismaClient } from '@prisma/client';
-import { createHash, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
+import {
+  ITEM_IDS,
+  PATIENT_IDS as SEED_PATIENT_IDS,
+  SEED_BRANCH_ID,
+  STAFF_IDS,
+} from '../prisma/seed-constants';
 
 const prisma = new PrismaClient();
 
@@ -16,25 +22,22 @@ const BASE_URL = (process.env.BASE_URL ?? 'http://localhost:3000/api').replace(
   '',
 );
 
-/** Same deterministic IDs as prisma/seed.ts */
-function seedId(key: string): string {
-  const h = createHash('sha1').update(`ycdo-hms-seed:${key}`).digest('hex');
-  return [
-    h.slice(0, 8),
-    h.slice(8, 12),
-    `4${h.slice(13, 16)}`,
-    `8${h.slice(17, 20)}`,
-    h.slice(20, 32),
-  ].join('-');
-}
-
-const DOCTOR_ID = seedId('staff-dr-ahmed');
-const ITEM_STOCK = seedId('item-disprin'); // cheap, seeded high
-const ITEM_ZERO = seedId('item-insulin'); // used as zero-stock bait
-const ITEM_PRICE = seedId('item-opd'); // no stock tracking
-const PATIENT_IDS = Array.from({ length: 10 }, (_, i) =>
-  seedId(`pat-${String(i + 1).padStart(2, '0')}`),
-);
+const DOCTOR_ID = STAFF_IDS.DR_AHMED;
+const ITEM_STOCK = ITEM_IDS.DISPRIN; // cheap, seeded high
+const ITEM_ZERO = ITEM_IDS.INSULIN; // used as zero-stock bait
+const ITEM_PRICE = ITEM_IDS.OPD; // no stock tracking
+const PATIENT_IDS = [
+  SEED_PATIENT_IDS.PAT_01,
+  SEED_PATIENT_IDS.PAT_02,
+  SEED_PATIENT_IDS.PAT_03,
+  SEED_PATIENT_IDS.PAT_04,
+  SEED_PATIENT_IDS.PAT_05,
+  SEED_PATIENT_IDS.PAT_06,
+  SEED_PATIENT_IDS.PAT_07,
+  SEED_PATIENT_IDS.PAT_08,
+  SEED_PATIENT_IDS.PAT_09,
+  SEED_PATIENT_IDS.PAT_10,
+];
 
 type Result = { name: string; pass: boolean; detail: string };
 
@@ -74,6 +77,30 @@ async function setStock(branchId: string, itemId: string, qty: number) {
     },
     update: { quantity: new Prisma.Decimal(qty) },
   });
+}
+
+/** Ensure BranchItemPrice exists for items this suite touches (seed normally provides these). */
+async function ensureBranchPrices(branchId: string) {
+  const needed = [ITEM_STOCK, ITEM_ZERO, ITEM_PRICE];
+  for (const itemId of needed) {
+    const existing = await prisma.branchItemPrice.findUnique({
+      where: { branchId_itemId: { branchId, itemId } },
+    });
+    if (existing) continue;
+
+    // Fallback tiers if seed was skipped — ascending DESERVING…GENERAL
+    await prisma.branchItemPrice.create({
+      data: {
+        branchId,
+        itemId,
+        purchasePrice: new Prisma.Decimal(10),
+        priceDeserving: new Prisma.Decimal(50),
+        pricePoor: new Prisma.Decimal(100),
+        priceMember: new Prisma.Decimal(200),
+        priceGeneral: new Prisma.Decimal(500),
+      },
+    });
+  }
 }
 
 async function releaseActive(itemId: string) {
@@ -365,6 +392,28 @@ async function test5_rollbackKeepsReservations(
 async function test6_pricingTiers(): Promise<Result> {
   const name = 'T6 Pricing tiers ascending (DESERVING…GENERAL)';
   const categories = ['DESERVING', 'POOR', 'MEMBER', 'GENERAL'] as const;
+
+  const branchPrice = await prisma.branchItemPrice.findUnique({
+    where: {
+      branchId_itemId: { branchId: SEED_BRANCH_ID, itemId: ITEM_PRICE },
+    },
+  });
+  if (!branchPrice) {
+    return {
+      name,
+      pass: false,
+      detail: `BranchItemPrice missing for OPD at ${SEED_BRANCH_ID}`,
+    };
+  }
+
+  const expectedByCategory: Record<(typeof categories)[number], Prisma.Decimal> =
+    {
+      DESERVING: branchPrice.priceDeserving,
+      POOR: branchPrice.pricePoor,
+      MEMBER: branchPrice.priceMember,
+      GENERAL: branchPrice.priceGeneral,
+    };
+
   const prices: { category: string; unitPrice: Prisma.Decimal }[] = [];
 
   for (let i = 0; i < categories.length; i++) {
@@ -395,7 +444,15 @@ async function test6_pricingTiers(): Promise<Result> {
         detail: `${category}: missing lines[0].unitPrice`,
       };
     }
-    prices.push({ category, unitPrice: new Prisma.Decimal(unitPrice) });
+    const snapped = new Prisma.Decimal(unitPrice);
+    if (!snapped.eq(expectedByCategory[category])) {
+      return {
+        name,
+        pass: false,
+        detail: `${category}: token line ${snapped} !== BranchItemPrice ${expectedByCategory[category]}`,
+      };
+    }
+    prices.push({ category, unitPrice: snapped });
   }
 
   const distinct = new Set(prices.map((p) => p.unitPrice.toString()));
@@ -416,15 +473,17 @@ async function test6_pricingTiers(): Promise<Result> {
     name,
     pass: ordered,
     detail: ordered
-      ? prices.map((p) => `${p.category}=${p.unitPrice}`).join(' < ')
+      ? `BranchItemPrice → ${prices.map((p) => `${p.category}=${p.unitPrice}`).join(' < ')}`
       : `not ascending: ${prices.map((p) => `${p.category}=${p.unitPrice}`).join(', ')}`,
   };
 }
 
 async function main() {
-  const branchId = process.env.BRANCH_ID?.trim();
-  if (!branchId) {
-    console.error('BRANCH_ID must be set in .env');
+  const branchId = process.env.BRANCH_ID?.trim() || SEED_BRANCH_ID;
+  if (branchId !== SEED_BRANCH_ID) {
+    console.error(
+      `BRANCH_ID must be ${SEED_BRANCH_ID} (seed constants). Got: ${branchId}`,
+    );
     process.exit(1);
   }
 
@@ -442,6 +501,8 @@ async function main() {
     console.error('Seed data missing — run: npx prisma db seed');
     process.exit(1);
   }
+
+  await ensureBranchPrices(branchId);
 
   console.log(`\nConcurrency tests → ${BASE_URL}\n`);
 

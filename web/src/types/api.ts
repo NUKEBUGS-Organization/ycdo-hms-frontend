@@ -38,12 +38,31 @@ export interface Item {
   categoryId: string;
   categoryName?: string;
   tracksStock: boolean;
+  /** From BranchItemPrice for this branch — display only; do not re-resolve. */
   purchasePrice: DecimalString;
   priceDeserving: DecimalString;
   pricePoor: DecimalString;
   priceMember: DecimalString;
   priceGeneral: DecimalString;
+  /** Server-resolved for the requested patientCategory. */
+  unitPrice: DecimalString;
   available?: DecimalString;
+}
+
+export interface ItemUnitPrice {
+  itemId: string;
+  unitPrice: DecimalString;
+  purchasePrice: DecimalString;
+  priceDeserving: DecimalString;
+  pricePoor: DecimalString;
+  priceMember: DecimalString;
+  priceGeneral: DecimalString;
+}
+
+export interface RegistrationFee {
+  branchId: string;
+  category: PatientCategory;
+  amount: DecimalString;
 }
 
 export interface StaffMember {

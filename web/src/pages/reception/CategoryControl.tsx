@@ -1,4 +1,4 @@
-import { CATEGORIES, CATEGORY_LABEL } from '../../lib/pricing';
+import { CATEGORIES, CATEGORY_LABEL } from '../../lib/categories';
 import type { PatientCategory } from '../../types/api';
 
 type Props = {

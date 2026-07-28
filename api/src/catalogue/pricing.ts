@@ -1,24 +1,24 @@
-import { Item, PatientCategory, Prisma } from '@prisma/client';
+import { BranchItemPrice, PatientCategory, Prisma } from '@prisma/client';
 
-type PricedItem = Pick<
-  Item,
+type PricedRow = Pick<
+  BranchItemPrice,
   'priceDeserving' | 'pricePoor' | 'priceMember' | 'priceGeneral'
 >;
 
-/** Sole category→price mapping. Do not copy. */
+/** Sole category→price mapping. Do not copy — server-side only. */
 export function resolveUnitPrice(
-  item: PricedItem,
+  price: PricedRow,
   category: PatientCategory,
 ): Prisma.Decimal {
   switch (category) {
     case PatientCategory.DESERVING:
-      return item.priceDeserving;
+      return price.priceDeserving;
     case PatientCategory.POOR:
-      return item.pricePoor;
+      return price.pricePoor;
     case PatientCategory.MEMBER:
-      return item.priceMember;
+      return price.priceMember;
     case PatientCategory.GENERAL:
-      return item.priceGeneral;
+      return price.priceGeneral;
     default: {
       const _exhaustive: never = category;
       return _exhaustive;

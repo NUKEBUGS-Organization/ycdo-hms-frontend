@@ -117,6 +117,19 @@ export class TokensService {
       }
       const itemById = new Map(items.map((i) => [i.id, i]));
 
+      const branchPrices = await tx.branchItemPrice.findMany({
+        where: { branchId, itemId: { in: itemIds } },
+      });
+      const priceByItemId = new Map(branchPrices.map((p) => [p.itemId, p]));
+      for (const itemId of itemIds) {
+        if (!priceByItemId.has(itemId)) {
+          const item = itemById.get(itemId)!;
+          throw new BadRequestException(
+            `No branch price for item ${item.name} (${itemId}) at this branch`,
+          );
+        }
+      }
+
       // --- 2. Token number (branch + date) ---
       await tx.$executeRaw`
         INSERT INTO token_counters ("branchId", date, "lastNo")
@@ -137,9 +150,10 @@ export class TokensService {
         WHERE "branchId" = ${branchId}::uuid AND date = ${today}::date
       `;
 
-      // --- 3. Line pricing ---
+      // --- 3. Line pricing (BranchItemPrice only) ---
       const lineData = dto.lines.map((line) => {
         const item = itemById.get(line.itemId)!;
+        const price = priceByItemId.get(line.itemId)!;
         const fixDose = line.fixDose ?? 0;
         const quantity =
           fixDose > 0
@@ -155,7 +169,7 @@ export class TokensService {
           );
         }
 
-        const unitPrice = resolveUnitPrice(item, dto.category);
+        const unitPrice = resolveUnitPrice(price, dto.category);
         const lineTotal = roundMoney(multiplyMoney(quantity, unitPrice));
 
         return {
@@ -167,7 +181,7 @@ export class TokensService {
           quantity,
           unitPrice,
           lineTotal,
-          purchasePrice: item.purchasePrice,
+          purchasePrice: price.purchasePrice,
           tracksStock: item.tracksStock,
           itemName: item.name,
         };

@@ -1,6 +1,5 @@
-import { round2, toNum } from '../../lib/money';
-import { resolveUnitPrice } from '../../lib/pricing';
-import type { Item, PatientCategory } from '../../types/api';
+import { round2 } from '../../lib/money';
+import type { Item } from '../../types/api';
 
 export type CartLine = {
   localId: string;
@@ -12,13 +11,10 @@ export type CartLine = {
   days: number;
   fixDose: number;
   quantity: number;
+  /** Server-resolved via BranchItemPrice — never computed in the browser. */
   unitPrice: number;
   lineTotal: number;
   purchasePrice: string;
-  priceDeserving: string;
-  pricePoor: string;
-  priceMember: string;
-  priceGeneral: string;
   reservationId: string | null;
   error: string | null;
   availableHint: number | null;
@@ -45,14 +41,15 @@ export type LastSaved = {
   label: string;
 };
 
-export function repriceLine(
+export function withUnitPrice(
   line: CartLine,
-  category: PatientCategory,
+  unitPrice: number,
+  purchasePrice?: string,
 ): CartLine {
-  const unitPrice = toNum(resolveUnitPrice(line, category));
   return {
     ...line,
     unitPrice,
+    purchasePrice: purchasePrice ?? line.purchasePrice,
     lineTotal: round2(unitPrice * line.quantity),
   };
 }

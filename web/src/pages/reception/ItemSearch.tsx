@@ -2,7 +2,6 @@ import { useQuery } from '@tanstack/react-query';
 import { useEffect, useState, type RefObject } from 'react';
 import { api } from '../../lib/api';
 import { money, toNum } from '../../lib/money';
-import { resolveUnitPrice } from '../../lib/pricing';
 import type { Item, PatientCategory } from '../../types/api';
 import type { DoseDraft } from './cartTypes';
 
@@ -43,9 +42,11 @@ export function ItemSearch({
   const [highlight, setHighlight] = useState(0);
 
   const search = useQuery({
-    queryKey: ['items', 'search', debounced],
+    queryKey: ['items', 'search', debounced, category],
     queryFn: () =>
-      api<Item[]>(`/items/search?q=${encodeURIComponent(debounced)}`),
+      api<Item[]>(
+        `/items/search?q=${encodeURIComponent(debounced)}&patientCategory=${encodeURIComponent(category)}`,
+      ),
     enabled: debounced.trim().length > 0 && !draft,
   });
 
@@ -113,8 +114,11 @@ export function ItemSearch({
             </label>
           ))}
         </div>
-        <div className="mt-2 text-xs text-slate-500">
-          Enter commits · Esc cancels
+        <div className="mt-2 flex justify-between text-xs text-slate-500">
+          <span>Enter commits · Esc cancels</span>
+          <span className="font-mono tabular-nums text-slate-700">
+            unit {money(toNum(draft.item.unitPrice))}
+          </span>
         </div>
       </div>
     );
@@ -169,7 +173,8 @@ export function ItemSearch({
             const avail = toNum(item.available);
             const oos = item.tracksStock && avail <= 0;
             const low = item.tracksStock && avail > 0 && avail < 10;
-            const selected = resolveUnitPrice(item, category);
+            // Highlight the server-resolved unit for current patient category
+            const selected = item.unitPrice;
             return (
               <li key={item.id}>
                 <button

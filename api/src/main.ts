@@ -5,8 +5,21 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+  // CapRover / nginx terminate TLS and forward X-Forwarded-* headers
+  const express = app.getHttpAdapter().getInstance();
+  express.set('trust proxy', 1);
+
   app.setGlobalPrefix('api');
-  app.enableCors();
+  app.enableShutdownHooks();
+
+  const corsOrigin = process.env.CORS_ORIGIN?.trim();
+  app.enableCors({
+    origin: corsOrigin
+      ? corsOrigin.split(',').map((o) => o.trim())
+      : true,
+    credentials: true,
+  });
+
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -15,7 +28,8 @@ async function bootstrap() {
     }),
   );
 
-  const port = process.env.PORT ?? 3000;
-  await app.listen(port);
+  // Docker/CapRover sets PORT=80; local default stays 3000
+  const port = Number(process.env.PORT) || 3000;
+  await app.listen(port, '0.0.0.0');
 }
 bootstrap();

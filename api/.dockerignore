@@ -1,0 +1,16 @@
+node_modules
+dist
+coverage
+test
+.git
+.gitignore
+*.md
+.env
+.env.*
+!.env.example
+deploy.tar.gz
+*.tar.gz
+*.tsbuildinfo
+*.log
+.vscode
+.idea

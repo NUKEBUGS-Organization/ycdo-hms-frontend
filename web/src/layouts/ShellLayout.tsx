@@ -11,10 +11,10 @@ import { api } from '../lib/api';
 import type { HealthResponse } from '../types/api';
 
 const BRANCH_NAME =
-  (import.meta.env.VITE_BRANCH_NAME as string | undefined) ??
+  (import.meta.env.VITE_BRANCH_NAME as string | undefined) ||
   'YCDO Central Hospital';
 const BRANCH_CODE =
-  (import.meta.env.VITE_BRANCH_CODE as string | undefined) ?? 'CH';
+  (import.meta.env.VITE_BRANCH_CODE as string | undefined) || 'CH';
 
 function useClock() {
   const [now, setNow] = useState(() => new Date());

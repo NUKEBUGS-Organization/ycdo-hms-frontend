@@ -1,7 +1,9 @@
-node_modules
-# Keep environment variables out of version control
 node_modules/
 dist/
 .env
+.env.local
+.env.*.local
+deploy.tar.gz
+*.tar.gz
 
 /generated/prisma

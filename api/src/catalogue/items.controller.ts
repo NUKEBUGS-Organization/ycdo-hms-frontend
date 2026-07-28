@@ -8,8 +8,17 @@ export class ItemsController {
   @Get('search')
   search(
     @Query('q') q: string,
-    @Query('category') category?: string,
+    @Query('categoryId') categoryId?: string,
+    @Query('patientCategory') patientCategory?: string,
   ) {
-    return this.itemsService.search(q ?? '', category);
+    return this.itemsService.search(q ?? '', categoryId, patientCategory);
+  }
+
+  @Get('unit-prices')
+  unitPrices(
+    @Query('ids') ids: string,
+    @Query('patientCategory') patientCategory?: string,
+  ) {
+    return this.itemsService.unitPrices(ids ?? '', patientCategory);
   }
 }

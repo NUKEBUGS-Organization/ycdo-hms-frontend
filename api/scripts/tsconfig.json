@@ -8,5 +8,5 @@
     "skipLibCheck": true,
     "resolveJsonModule": true
   },
-  "include": ["./**/*.ts", "../prisma/seed.ts"]
+  "include": ["./**/*.ts", "../prisma/seed.ts", "../prisma/seed-constants.ts"]
 }

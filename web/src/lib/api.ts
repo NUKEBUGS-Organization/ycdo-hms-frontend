@@ -23,9 +23,11 @@ function messageFromBody(body: unknown, fallback: string): string {
   return fallback;
 }
 
+// Production (CapRover): VITE_API_URL=/api → nginx proxies to the API app.
+// Local: default to the Nest API on :3000 (or set VITE_API_URL in .env).
 const BASE =
-  (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') ??
-  'http://localhost:3000/api';
+  (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') ||
+  (import.meta.env.DEV ? 'http://localhost:3000/api' : '/api');
 
 type Method = 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
 

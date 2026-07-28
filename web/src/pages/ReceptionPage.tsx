@@ -16,9 +16,10 @@ import {
   round2,
   toNum,
 } from '../lib/money';
-import { CATEGORIES, resolveUnitPrice } from '../lib/pricing';
+import { CATEGORIES } from '../lib/categories';
 import type {
   HealthResponse,
+  ItemUnitPrice,
   Patient,
   PatientCategory,
   ReservationCreateResult,
@@ -28,7 +29,7 @@ import type {
 import { CartPanel } from './reception/CartPanel';
 import { CategoryControl } from './reception/CategoryControl';
 import {
-  repriceLine,
+  withUnitPrice,
   type CartLine,
   type DoseDraft,
   type LastSaved,
@@ -40,7 +41,7 @@ import { MoneyBar } from './reception/MoneyBar';
 import { PatientPanel } from './reception/PatientPanel';
 
 const BRANCH_CODE =
-  (import.meta.env.VITE_BRANCH_CODE as string | undefined) ?? 'CH';
+  (import.meta.env.VITE_BRANCH_CODE as string | undefined) || 'CH';
 
 const IDLE_WARN_MS = 15 * 60 * 1000;
 const HOLD_MS = 20 * 60 * 1000;
@@ -187,8 +188,26 @@ export function ReceptionPage() {
 
   const onCategoryChange = (c: PatientCategory) => {
     setCategory(c);
-    setLines((prev) => prev.map((l) => repriceLine(l, c)));
     void bumpActivity();
+    void (async () => {
+      const ids = lines.map((l) => l.itemId);
+      if (ids.length === 0) return;
+      try {
+        const prices = await api<ItemUnitPrice[]>(
+          `/items/unit-prices?patientCategory=${encodeURIComponent(c)}&ids=${ids.map(encodeURIComponent).join(',')}`,
+        );
+        const byId = new Map(prices.map((p) => [p.itemId, p]));
+        setLines((prev) =>
+          prev.map((l) => {
+            const p = byId.get(l.itemId);
+            if (!p) return l;
+            return withUnitPrice(l, toNum(p.unitPrice), p.purchasePrice);
+          }),
+        );
+      } catch {
+        /* keep prior line prices; save will re-resolve server-side */
+      }
+    })();
   };
 
   const cycleCategory = () => {
@@ -219,7 +238,7 @@ export function ReceptionPage() {
     const quantity = lineQuantity(dose, feed, days, fixDose);
     if (quantity <= 0) return;
 
-    const unit = toNum(resolveUnitPrice(draft.item, category));
+    const unit = toNum(draft.item.unitPrice);
     const localId = crypto.randomUUID();
     const optimistic: CartLine = {
       localId,
@@ -234,10 +253,6 @@ export function ReceptionPage() {
       unitPrice: unit,
       lineTotal: round2(unit * quantity),
       purchasePrice: draft.item.purchasePrice,
-      priceDeserving: draft.item.priceDeserving,
-      pricePoor: draft.item.pricePoor,
-      priceMember: draft.item.priceMember,
-      priceGeneral: draft.item.priceGeneral,
       reservationId: null,
       error: null,
       availableHint: null,

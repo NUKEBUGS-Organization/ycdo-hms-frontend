@@ -1,14 +1,14 @@
 import { money, round2, toNum } from '../lib/money';
-import { CATEGORY_LABEL } from '../lib/pricing';
+import { CATEGORY_LABEL } from '../lib/categories';
 import type { Token } from '../types/api';
 
 const HOSPITAL =
-  (import.meta.env.VITE_BRANCH_NAME as string | undefined) ??
+  (import.meta.env.VITE_BRANCH_NAME as string | undefined) ||
   'YCDO Central Hospital';
 const BRANCH_CODE =
-  (import.meta.env.VITE_BRANCH_CODE as string | undefined) ?? 'CH';
+  (import.meta.env.VITE_BRANCH_CODE as string | undefined) || 'CH';
 const BRANCH_PHONE =
-  (import.meta.env.VITE_BRANCH_PHONE as string | undefined) ?? '051-111-9236';
+  (import.meta.env.VITE_BRANCH_PHONE as string | undefined) || '051-111-9236';
 
 function formatPktDateTime(iso: string): string {
   const d = new Date(iso);

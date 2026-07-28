@@ -1,0 +1,15 @@
+node_modules
+dist
+dist-ssr
+.git
+.gitignore
+*.md
+.env
+.env.*
+!.env.example
+*.local
+deploy.tar.gz
+*.tar.gz
+*.log
+.vscode
+.idea

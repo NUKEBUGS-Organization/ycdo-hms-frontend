@@ -1,28 +1,27 @@
-import 'dotenv/config';
+import {
+  CATEGORY_IDS,
+  ITEM_IDS,
+  PATIENT_IDS,
+  REGISTRATION_FEES,
+  SEED_BRANCH_CODE,
+  SEED_BRANCH_ID,
+  STAFF_IDS,
+  SYSTEM_ACTOR_ID,
+  TRANSFER_IDS,
+  TRANSFER_LINE_IDS,
+  openingMovementId,
+} from './seed-constants';
 import {
   Gender,
   MovementReason,
+  PatientCategory,
   Prisma,
   PrismaClient,
   TransferStatus,
 } from '@prisma/client';
-import { createHash } from 'crypto';
+import 'dotenv/config';
 
 const prisma = new PrismaClient();
-
-const SYSTEM_ACTOR_ID = '00000000-0000-4000-8000-000000000001';
-
-/** Deterministic UUID from a seed key (stable across re-runs). */
-function id(key: string): string {
-  const h = createHash('sha1').update(`ycdo-hms-seed:${key}`).digest('hex');
-  return [
-    h.slice(0, 8),
-    h.slice(8, 12),
-    `4${h.slice(13, 16)}`,
-    `8${h.slice(17, 20)}`,
-    h.slice(20, 32),
-  ].join('-');
-}
 
 function d(n: number | string): Prisma.Decimal {
   return new Prisma.Decimal(n);
@@ -31,7 +30,7 @@ function d(n: number | string): Prisma.Decimal {
 function requireEnv(name: string): string {
   const v = process.env[name];
   if (!v?.trim()) {
-    throw new Error(`${name} must be set in .env before seeding`);
+    throw new Error(`${name} must be set before seeding`);
   }
   return v.trim();
 }
@@ -40,9 +39,14 @@ async function main() {
   const branchId = requireEnv('BRANCH_ID');
   const branchCode = requireEnv('BRANCH_CODE');
 
-  if (branchCode !== 'CH') {
-    console.warn(
-      `Warning: BRANCH_CODE is "${branchCode}" (seed patients use CH-##### mrNos).`,
+  if (branchId !== SEED_BRANCH_ID) {
+    throw new Error(
+      `BRANCH_ID must be ${SEED_BRANCH_ID} (SEED_BRANCH_ID) to match seed data. Got: ${branchId}`,
+    );
+  }
+  if (branchCode !== SEED_BRANCH_CODE) {
+    throw new Error(
+      `BRANCH_CODE must be ${SEED_BRANCH_CODE}. Got: ${branchCode}`,
     );
   }
 
@@ -50,17 +54,17 @@ async function main() {
   // 1. Branch
   // -------------------------------------------------------------------------
   const branch = await prisma.branch.upsert({
-    where: { id: branchId },
+    where: { id: SEED_BRANCH_ID },
     create: {
-      id: branchId,
-      code: branchCode,
+      id: SEED_BRANCH_ID,
+      code: SEED_BRANCH_CODE,
       name: 'YCDO Central Hospital',
       phone: '051-111-9236',
       address: 'G-8/4, Islamabad',
       active: true,
     },
     update: {
-      code: branchCode,
+      code: SEED_BRANCH_CODE,
       name: 'YCDO Central Hospital',
       phone: '051-111-9236',
       address: 'G-8/4, Islamabad',
@@ -73,37 +77,37 @@ async function main() {
   // -------------------------------------------------------------------------
   const staffDefs = [
     {
-      key: 'staff-dr-ahmed',
+      id: STAFF_IDS.DR_AHMED,
       fullName: 'Dr. Ahmed Hassan',
       designation: 'Medical Officer',
       isDoctor: true,
     },
     {
-      key: 'staff-dr-fatima',
+      id: STAFF_IDS.DR_FATIMA,
       fullName: 'Dr. Fatima Khan',
       designation: 'Consultant Physician',
       isDoctor: true,
     },
     {
-      key: 'staff-dr-usman',
+      id: STAFF_IDS.DR_USMAN,
       fullName: 'Dr. Usman Ali',
       designation: 'Pediatrician',
       isDoctor: true,
     },
     {
-      key: 'staff-dr-aisha',
+      id: STAFF_IDS.DR_AISHA,
       fullName: 'Dr. Aisha Malik',
       designation: 'Gynecologist',
       isDoctor: true,
     },
     {
-      key: 'staff-rec-sana',
+      id: STAFF_IDS.REC_SANA,
       fullName: 'Sana Iqbal',
       designation: 'Receptionist',
       isDoctor: false,
     },
     {
-      key: 'staff-pharm-bilal',
+      id: STAFF_IDS.PHARM_BILAL,
       fullName: 'Bilal Raza',
       designation: 'Pharmacist',
       isDoctor: false,
@@ -113,9 +117,9 @@ async function main() {
   const staff: { id: string; fullName: string; isDoctor: boolean }[] = [];
   for (const s of staffDefs) {
     const row = await prisma.staff.upsert({
-      where: { id: id(s.key) },
+      where: { id: s.id },
       create: {
-        id: id(s.key),
+        id: s.id,
         fullName: s.fullName,
         designation: s.designation,
         isDoctor: s.isDoctor,
@@ -131,26 +135,23 @@ async function main() {
     staff.push(row);
   }
 
-  const pharmacistId = id('staff-pharm-bilal');
-
   // -------------------------------------------------------------------------
   // 3. Item categories
   // -------------------------------------------------------------------------
   const categoryDefs = [
-    { key: 'cat-tablets', name: 'Tablets', tracksStock: true },
-    { key: 'cat-syrups', name: 'Syrups', tracksStock: true },
-    { key: 'cat-injections', name: 'Injections', tracksStock: true },
-    { key: 'cat-lab', name: 'Lab Tests', tracksStock: false },
-    { key: 'cat-consult', name: 'Consultation', tracksStock: false },
-    { key: 'cat-proc', name: 'Procedures', tracksStock: false },
+    { id: CATEGORY_IDS.TABLETS, name: 'Tablets', tracksStock: true },
+    { id: CATEGORY_IDS.SYRUPS, name: 'Syrups', tracksStock: true },
+    { id: CATEGORY_IDS.INJECTIONS, name: 'Injections', tracksStock: true },
+    { id: CATEGORY_IDS.LAB, name: 'Lab Tests', tracksStock: false },
+    { id: CATEGORY_IDS.CONSULT, name: 'Consultation', tracksStock: false },
+    { id: CATEGORY_IDS.PROC, name: 'Procedures', tracksStock: false },
   ] as const;
 
-  const categories = new Map<string, string>();
   for (const c of categoryDefs) {
-    const row = await prisma.itemCategory.upsert({
-      where: { id: id(c.key) },
+    await prisma.itemCategory.upsert({
+      where: { id: c.id },
       create: {
-        id: id(c.key),
+        id: c.id,
         name: c.name,
         tracksStock: c.tracksStock,
       },
@@ -159,17 +160,17 @@ async function main() {
         tracksStock: c.tracksStock,
       },
     });
-    categories.set(c.key, row.id);
   }
 
   // -------------------------------------------------------------------------
-  // 4. Items (~25) — ascending tiers, varied prices
+  // 4. Items
   // -------------------------------------------------------------------------
   type ItemDef = {
-    key: string;
-    categoryKey: (typeof categoryDefs)[number]['key'];
+    id: string;
+    categoryId: string;
     name: string;
     barcode?: string;
+    tracksStock: boolean;
     purchase: number;
     deserving: number;
     poor: number;
@@ -178,12 +179,12 @@ async function main() {
   };
 
   const itemDefs: ItemDef[] = [
-    // Tablets
     {
-      key: 'item-panadol',
-      categoryKey: 'cat-tablets',
+      id: ITEM_IDS.PANADOL,
+      categoryId: CATEGORY_IDS.TABLETS,
       name: 'Panadol 500mg',
       barcode: '8901030895623',
+      tracksStock: true,
       purchase: 1.5,
       deserving: 2,
       poor: 3,
@@ -191,10 +192,11 @@ async function main() {
       general: 5,
     },
     {
-      key: 'item-brufen',
-      categoryKey: 'cat-tablets',
+      id: ITEM_IDS.BRUFEN,
+      categoryId: CATEGORY_IDS.TABLETS,
       name: 'Brufen 400mg',
       barcode: '8901030895630',
+      tracksStock: true,
       purchase: 3.25,
       deserving: 5,
       poor: 7,
@@ -202,10 +204,11 @@ async function main() {
       general: 12,
     },
     {
-      key: 'item-augmentin',
-      categoryKey: 'cat-tablets',
+      id: ITEM_IDS.AUGMENTIN,
+      categoryId: CATEGORY_IDS.TABLETS,
       name: 'Augmentin 625mg',
       barcode: '8901030895647',
+      tracksStock: true,
       purchase: 28,
       deserving: 35,
       poor: 42,
@@ -213,10 +216,11 @@ async function main() {
       general: 60,
     },
     {
-      key: 'item-amoxil',
-      categoryKey: 'cat-tablets',
+      id: ITEM_IDS.AMOXIL,
+      categoryId: CATEGORY_IDS.TABLETS,
       name: 'Amoxil 250mg',
       barcode: '8901030895654',
+      tracksStock: true,
       purchase: 8,
       deserving: 12,
       poor: 15,
@@ -224,10 +228,11 @@ async function main() {
       general: 22,
     },
     {
-      key: 'item-flagyl',
-      categoryKey: 'cat-tablets',
+      id: ITEM_IDS.FLAGYL,
+      categoryId: CATEGORY_IDS.TABLETS,
       name: 'Flagyl 400mg',
       barcode: '8901030895661',
+      tracksStock: true,
       purchase: 4.5,
       deserving: 6,
       poor: 8,
@@ -235,10 +240,11 @@ async function main() {
       general: 14,
     },
     {
-      key: 'item-disprin',
-      categoryKey: 'cat-tablets',
+      id: ITEM_IDS.DISPRIN,
+      categoryId: CATEGORY_IDS.TABLETS,
       name: 'Disprin',
       barcode: '8901030895678',
+      tracksStock: true,
       purchase: 0.8,
       deserving: 1.5,
       poor: 2,
@@ -246,10 +252,11 @@ async function main() {
       general: 3.5,
     },
     {
-      key: 'item-claritin',
-      categoryKey: 'cat-tablets',
+      id: ITEM_IDS.CLARITIN,
+      categoryId: CATEGORY_IDS.TABLETS,
       name: 'Clarityn 10mg',
       barcode: '8901030895685',
+      tracksStock: true,
       purchase: 9,
       deserving: 12,
       poor: 16,
@@ -257,22 +264,23 @@ async function main() {
       general: 25,
     },
     {
-      key: 'item-risek',
-      categoryKey: 'cat-tablets',
+      id: ITEM_IDS.RISEK,
+      categoryId: CATEGORY_IDS.TABLETS,
       name: 'Risek 20mg',
       barcode: '8901030895692',
+      tracksStock: true,
       purchase: 11,
       deserving: 15,
       poor: 20,
       member: 25,
       general: 32,
     },
-    // Syrups
     {
-      key: 'item-ors',
-      categoryKey: 'cat-syrups',
+      id: ITEM_IDS.ORS,
+      categoryId: CATEGORY_IDS.SYRUPS,
       name: 'ORS Sachet',
       barcode: '8901030895708',
+      tracksStock: true,
       purchase: 5,
       deserving: 8,
       poor: 10,
@@ -280,10 +288,11 @@ async function main() {
       general: 15,
     },
     {
-      key: 'item-calpol',
-      categoryKey: 'cat-syrups',
+      id: ITEM_IDS.CALPOL,
+      categoryId: CATEGORY_IDS.SYRUPS,
       name: 'Calpol Syrup 60ml',
       barcode: '8901030895715',
+      tracksStock: true,
       purchase: 55,
       deserving: 70,
       poor: 85,
@@ -291,10 +300,11 @@ async function main() {
       general: 120,
     },
     {
-      key: 'item-ventolin-syr',
-      categoryKey: 'cat-syrups',
+      id: ITEM_IDS.VENTOLIN_SYR,
+      categoryId: CATEGORY_IDS.SYRUPS,
       name: 'Ventolin Syrup',
       barcode: '8901030895722',
+      tracksStock: true,
       purchase: 48,
       deserving: 65,
       poor: 80,
@@ -302,10 +312,11 @@ async function main() {
       general: 110,
     },
     {
-      key: 'item-augmentin-syr',
-      categoryKey: 'cat-syrups',
+      id: ITEM_IDS.AUGMENTIN_SYR,
+      categoryId: CATEGORY_IDS.SYRUPS,
       name: 'Augmentin Syrup 156mg',
       barcode: '8901030895739',
+      tracksStock: true,
       purchase: 180,
       deserving: 220,
       poor: 260,
@@ -313,22 +324,23 @@ async function main() {
       general: 350,
     },
     {
-      key: 'item-flagyl-syr',
-      categoryKey: 'cat-syrups',
+      id: ITEM_IDS.FLAGYL_SYR,
+      categoryId: CATEGORY_IDS.SYRUPS,
       name: 'Flagyl Suspension',
       barcode: '8901030895746',
+      tracksStock: true,
       purchase: 42,
       deserving: 55,
       poor: 68,
       member: 80,
       general: 95,
     },
-    // Injections
     {
-      key: 'item-diclo-inj',
-      categoryKey: 'cat-injections',
+      id: ITEM_IDS.DICLO_INJ,
+      categoryId: CATEGORY_IDS.INJECTIONS,
       name: 'Diclofenac Injection',
       barcode: '8901030895753',
+      tracksStock: true,
       purchase: 18,
       deserving: 25,
       poor: 35,
@@ -336,10 +348,11 @@ async function main() {
       general: 55,
     },
     {
-      key: 'item-ceftriaxone',
-      categoryKey: 'cat-injections',
+      id: ITEM_IDS.CEFTRIAXONE,
+      categoryId: CATEGORY_IDS.INJECTIONS,
       name: 'Ceftriaxone 1g',
       barcode: '8901030895760',
+      tracksStock: true,
       purchase: 95,
       deserving: 120,
       poor: 150,
@@ -347,10 +360,11 @@ async function main() {
       general: 220,
     },
     {
-      key: 'item-insulin',
-      categoryKey: 'cat-injections',
+      id: ITEM_IDS.INSULIN,
+      categoryId: CATEGORY_IDS.INJECTIONS,
       name: 'Insulin Regular 100IU',
       barcode: '8901030895777',
+      tracksStock: true,
       purchase: 320,
       deserving: 400,
       poor: 480,
@@ -358,21 +372,22 @@ async function main() {
       general: 650,
     },
     {
-      key: 'item-dexa',
-      categoryKey: 'cat-injections',
+      id: ITEM_IDS.DEXA,
+      categoryId: CATEGORY_IDS.INJECTIONS,
       name: 'Dexamethasone Injection',
       barcode: '8901030895784',
+      tracksStock: true,
       purchase: 22,
       deserving: 30,
       poor: 40,
       member: 50,
       general: 65,
     },
-    // Lab Tests (no stock)
     {
-      key: 'item-cbc',
-      categoryKey: 'cat-lab',
+      id: ITEM_IDS.CBC,
+      categoryId: CATEGORY_IDS.LAB,
       name: 'CBC',
+      tracksStock: false,
       purchase: 80,
       deserving: 150,
       poor: 200,
@@ -380,9 +395,10 @@ async function main() {
       general: 300,
     },
     {
-      key: 'item-lft',
-      categoryKey: 'cat-lab',
+      id: ITEM_IDS.LFT,
+      categoryId: CATEGORY_IDS.LAB,
       name: 'LFT',
+      tracksStock: false,
       purchase: 120,
       deserving: 250,
       poor: 350,
@@ -390,9 +406,10 @@ async function main() {
       general: 550,
     },
     {
-      key: 'item-rft',
-      categoryKey: 'cat-lab',
+      id: ITEM_IDS.RFT,
+      categoryId: CATEGORY_IDS.LAB,
       name: 'RFT',
+      tracksStock: false,
       purchase: 100,
       deserving: 200,
       poor: 280,
@@ -400,20 +417,21 @@ async function main() {
       general: 450,
     },
     {
-      key: 'item-blood-sugar',
-      categoryKey: 'cat-lab',
+      id: ITEM_IDS.BLOOD_SUGAR,
+      categoryId: CATEGORY_IDS.LAB,
       name: 'Blood Sugar (Random)',
+      tracksStock: false,
       purchase: 20,
       deserving: 50,
       poor: 80,
       member: 100,
       general: 150,
     },
-    // Consultation
     {
-      key: 'item-opd',
-      categoryKey: 'cat-consult',
+      id: ITEM_IDS.OPD,
+      categoryId: CATEGORY_IDS.CONSULT,
       name: 'OPD Consultation',
+      tracksStock: false,
       purchase: 0,
       deserving: 50,
       poor: 100,
@@ -421,20 +439,21 @@ async function main() {
       general: 500,
     },
     {
-      key: 'item-followup',
-      categoryKey: 'cat-consult',
+      id: ITEM_IDS.FOLLOWUP,
+      categoryId: CATEGORY_IDS.CONSULT,
       name: 'Follow-up Consultation',
+      tracksStock: false,
       purchase: 0,
       deserving: 0,
       poor: 50,
       member: 100,
       general: 250,
     },
-    // Procedures
     {
-      key: 'item-ultrasound',
-      categoryKey: 'cat-proc',
+      id: ITEM_IDS.ULTRASOUND,
+      categoryId: CATEGORY_IDS.PROC,
       name: 'Ultrasound',
+      tracksStock: false,
       purchase: 200,
       deserving: 400,
       poor: 600,
@@ -442,9 +461,10 @@ async function main() {
       general: 1200,
     },
     {
-      key: 'item-ecg',
-      categoryKey: 'cat-proc',
+      id: ITEM_IDS.ECG,
+      categoryId: CATEGORY_IDS.PROC,
       name: 'ECG',
+      tracksStock: false,
       purchase: 50,
       deserving: 100,
       poor: 150,
@@ -453,43 +473,24 @@ async function main() {
     },
   ];
 
-  const items: {
-    id: string;
-    name: string;
-    tracksStock: boolean;
-    key: string;
-  }[] = [];
+  const items: { id: string; name: string; tracksStock: boolean }[] = [];
 
   for (const it of itemDefs) {
-    const categoryId = categories.get(it.categoryKey)!;
-    const tracksStock = categoryDefs.find((c) => c.key === it.categoryKey)!
-      .tracksStock;
-
     const row = await prisma.item.upsert({
-      where: { id: id(it.key) },
+      where: { id: it.id },
       create: {
-        id: id(it.key),
-        categoryId,
+        id: it.id,
+        categoryId: it.categoryId,
         name: it.name,
         barcode: it.barcode,
-        tracksStock,
-        purchasePrice: d(it.purchase),
-        priceDeserving: d(it.deserving),
-        pricePoor: d(it.poor),
-        priceMember: d(it.member),
-        priceGeneral: d(it.general),
+        tracksStock: it.tracksStock,
         active: true,
       },
       update: {
-        categoryId,
+        categoryId: it.categoryId,
         name: it.name,
         barcode: it.barcode,
-        tracksStock,
-        purchasePrice: d(it.purchase),
-        priceDeserving: d(it.deserving),
-        pricePoor: d(it.poor),
-        priceMember: d(it.member),
-        priceGeneral: d(it.general),
+        tracksStock: it.tracksStock,
         active: true,
       },
     });
@@ -497,45 +498,86 @@ async function main() {
       id: row.id,
       name: row.name,
       tracksStock: row.tracksStock,
-      key: it.key,
+    });
+
+    await prisma.branchItemPrice.upsert({
+      where: {
+        branchId_itemId: { branchId: SEED_BRANCH_ID, itemId: it.id },
+      },
+      create: {
+        branchId: SEED_BRANCH_ID,
+        itemId: it.id,
+        purchasePrice: d(it.purchase),
+        priceDeserving: d(it.deserving),
+        pricePoor: d(it.poor),
+        priceMember: d(it.member),
+        priceGeneral: d(it.general),
+      },
+      update: {
+        purchasePrice: d(it.purchase),
+        priceDeserving: d(it.deserving),
+        pricePoor: d(it.poor),
+        priceMember: d(it.member),
+        priceGeneral: d(it.general),
+      },
     });
   }
 
   // -------------------------------------------------------------------------
-  // 5. BranchStock + OPENING StockMovement for tracksStock items
+  // 4b. Registration fees (all four patient categories)
+  // -------------------------------------------------------------------------
+  for (const category of Object.values(PatientCategory)) {
+    const amount = REGISTRATION_FEES[category];
+    await prisma.registrationFee.upsert({
+      where: {
+        branchId_category: { branchId: SEED_BRANCH_ID, category },
+      },
+      create: {
+        branchId: SEED_BRANCH_ID,
+        category,
+        amount: d(amount),
+      },
+      update: {
+        amount: d(amount),
+      },
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // 5. BranchStock + OPENING StockMovement
   // -------------------------------------------------------------------------
   const stockQuantities: Record<string, number> = {
-    'item-panadol': 420,
-    'item-brufen': 310,
-    'item-augmentin': 95,
-    'item-amoxil': 180,
-    'item-flagyl': 240,
-    'item-disprin': 500,
-    'item-claritin': 75,
-    'item-risek': 130,
-    'item-ors': 350,
-    'item-calpol': 88,
-    'item-ventolin-syr': 64,
-    'item-augmentin-syr': 52,
-    'item-flagyl-syr': 70,
-    'item-diclo-inj': 145,
-    'item-ceftriaxone': 60,
-    'item-insulin': 55,
-    'item-dexa': 110,
+    [ITEM_IDS.PANADOL]: 420,
+    [ITEM_IDS.BRUFEN]: 310,
+    [ITEM_IDS.AUGMENTIN]: 95,
+    [ITEM_IDS.AMOXIL]: 180,
+    [ITEM_IDS.FLAGYL]: 240,
+    [ITEM_IDS.DISPRIN]: 500,
+    [ITEM_IDS.CLARITIN]: 75,
+    [ITEM_IDS.RISEK]: 130,
+    [ITEM_IDS.ORS]: 350,
+    [ITEM_IDS.CALPOL]: 88,
+    [ITEM_IDS.VENTOLIN_SYR]: 64,
+    [ITEM_IDS.AUGMENTIN_SYR]: 52,
+    [ITEM_IDS.FLAGYL_SYR]: 70,
+    [ITEM_IDS.DICLO_INJ]: 145,
+    [ITEM_IDS.CEFTRIAXONE]: 60,
+    [ITEM_IDS.INSULIN]: 55,
+    [ITEM_IDS.DEXA]: 110,
   };
 
   let stockCount = 0;
   let openingMovements = 0;
 
   for (const item of items.filter((i) => i.tracksStock)) {
-    const qty = stockQuantities[item.key] ?? 100;
+    const qty = stockQuantities[item.id] ?? 100;
 
     await prisma.branchStock.upsert({
       where: {
-        branchId_itemId: { branchId, itemId: item.id },
+        branchId_itemId: { branchId: SEED_BRANCH_ID, itemId: item.id },
       },
       create: {
-        branchId,
+        branchId: SEED_BRANCH_ID,
         itemId: item.id,
         quantity: d(qty),
         minLimit: 20,
@@ -549,17 +591,17 @@ async function main() {
     });
     stockCount++;
 
-    const movementId = id(`open-${item.key}`);
+    const movementId = openingMovementId(item.id);
     await prisma.stockMovement.upsert({
       where: { id: movementId },
       create: {
         id: movementId,
-        branchId,
+        branchId: SEED_BRANCH_ID,
         itemId: item.id,
         delta: d(qty),
         reason: MovementReason.ADJUSTMENT,
         refType: 'OPENING',
-        refId: branchId,
+        refId: SEED_BRANCH_ID,
         note: 'Opening balance (seed)',
         createdBy: SYSTEM_ACTOR_ID,
       },
@@ -567,7 +609,7 @@ async function main() {
         delta: d(qty),
         reason: MovementReason.ADJUSTMENT,
         refType: 'OPENING',
-        refId: branchId,
+        refId: SEED_BRANCH_ID,
         note: 'Opening balance (seed)',
       },
     });
@@ -575,10 +617,10 @@ async function main() {
   }
 
   // -------------------------------------------------------------------------
-  // 6. Patients
+  // 6. Patients (upsert by stable id; unique key is also branchId+mrNo)
   // -------------------------------------------------------------------------
   const patientDefs: {
-    key: string;
+    id: string;
     mrNo: string;
     name: string;
     gender: Gender;
@@ -590,7 +632,7 @@ async function main() {
     guardianPhone?: string;
   }[] = [
     {
-      key: 'pat-01',
+      id: PATIENT_IDS.PAT_01,
       mrNo: 'CH-00001',
       name: 'Muhammad Asif',
       gender: Gender.MALE,
@@ -599,7 +641,7 @@ async function main() {
       cnic: '61101-1234567-1',
     },
     {
-      key: 'pat-02',
+      id: PATIENT_IDS.PAT_02,
       mrNo: 'CH-00002',
       name: 'Ayesha Bibi',
       gender: Gender.FEMALE,
@@ -608,7 +650,7 @@ async function main() {
       cnic: '61101-7654321-2',
     },
     {
-      key: 'pat-03',
+      id: PATIENT_IDS.PAT_03,
       mrNo: 'CH-00003',
       name: 'Hassan Raza',
       gender: Gender.MALE,
@@ -618,7 +660,7 @@ async function main() {
       guardianPhone: '03331234567',
     },
     {
-      key: 'pat-04',
+      id: PATIENT_IDS.PAT_04,
       mrNo: 'CH-00004',
       name: 'Zainab Fatima',
       gender: Gender.FEMALE,
@@ -627,7 +669,7 @@ async function main() {
       cnic: '37405-1122334-5',
     },
     {
-      key: 'pat-05',
+      id: PATIENT_IDS.PAT_05,
       mrNo: 'CH-00005',
       name: 'Ali Haider',
       gender: Gender.MALE,
@@ -635,7 +677,7 @@ async function main() {
       cnic: '35202-9988776-3',
     },
     {
-      key: 'pat-06',
+      id: PATIENT_IDS.PAT_06,
       mrNo: 'CH-00006',
       name: 'Saima Noreen',
       gender: Gender.FEMALE,
@@ -643,7 +685,7 @@ async function main() {
       phone: '03451112233',
     },
     {
-      key: 'pat-07',
+      id: PATIENT_IDS.PAT_07,
       mrNo: 'CH-00007',
       name: 'Omar Farooq',
       gender: Gender.MALE,
@@ -653,7 +695,7 @@ async function main() {
       address: 'Sector G-9, Islamabad',
     },
     {
-      key: 'pat-08',
+      id: PATIENT_IDS.PAT_08,
       mrNo: 'CH-00008',
       name: 'Maryam Shah',
       gender: Gender.FEMALE,
@@ -661,7 +703,7 @@ async function main() {
       phone: '03129998877',
     },
     {
-      key: 'pat-09',
+      id: PATIENT_IDS.PAT_09,
       mrNo: 'CH-00009',
       name: 'Bilal Ahmed',
       gender: Gender.MALE,
@@ -670,7 +712,7 @@ async function main() {
       guardianPhone: '03007778899',
     },
     {
-      key: 'pat-10',
+      id: PATIENT_IDS.PAT_10,
       mrNo: 'CH-00010',
       name: 'Nida Parveen',
       gender: Gender.FEMALE,
@@ -684,10 +726,10 @@ async function main() {
   let patientCount = 0;
   for (const p of patientDefs) {
     await prisma.patient.upsert({
-      where: { id: id(p.key) },
+      where: { id: p.id },
       create: {
-        id: id(p.key),
-        branchId,
+        id: p.id,
+        branchId: SEED_BRANCH_ID,
         mrNo: p.mrNo,
         name: p.name,
         gender: p.gender,
@@ -717,50 +759,60 @@ async function main() {
   // -------------------------------------------------------------------------
   // 7. Transfers (ISSUED) with lines
   // -------------------------------------------------------------------------
-  const transfer1Id = id('xfer-001');
-  const transfer2Id = id('xfer-002');
   const issuedAt1 = new Date('2026-07-20T09:00:00+05:00');
   const issuedAt2 = new Date('2026-07-22T14:30:00+05:00');
 
   await prisma.transfer.upsert({
-    where: { id: transfer1Id },
+    where: { id: TRANSFER_IDS.XFER_001 },
     create: {
-      id: transfer1Id,
-      branchId,
+      id: TRANSFER_IDS.XFER_001,
+      branchId: SEED_BRANCH_ID,
       transferNo: 'ST-2026-0142',
       status: TransferStatus.ISSUED,
       issuedAt: issuedAt1,
-      issuedBy: pharmacistId,
+      issuedBy: STAFF_IDS.PHARM_BILAL,
     },
     update: {
       transferNo: 'ST-2026-0142',
       status: TransferStatus.ISSUED,
       issuedAt: issuedAt1,
-      issuedBy: pharmacistId,
+      issuedBy: STAFF_IDS.PHARM_BILAL,
       receivedAt: null,
       receivedBy: null,
     },
   });
 
   const transfer1Lines = [
-    { key: 'xfer-001-l1', itemKey: 'item-panadol', qty: 100 },
-    { key: 'xfer-001-l2', itemKey: 'item-augmentin', qty: 40 },
-    { key: 'xfer-001-l3', itemKey: 'item-ors', qty: 80 },
-    { key: 'xfer-001-l4', itemKey: 'item-ceftriaxone', qty: 25 },
+    {
+      id: TRANSFER_LINE_IDS.XFER_001_L1,
+      itemId: ITEM_IDS.PANADOL,
+      qty: 100,
+    },
+    {
+      id: TRANSFER_LINE_IDS.XFER_001_L2,
+      itemId: ITEM_IDS.AUGMENTIN,
+      qty: 40,
+    },
+    { id: TRANSFER_LINE_IDS.XFER_001_L3, itemId: ITEM_IDS.ORS, qty: 80 },
+    {
+      id: TRANSFER_LINE_IDS.XFER_001_L4,
+      itemId: ITEM_IDS.CEFTRIAXONE,
+      qty: 25,
+    },
   ];
 
   for (const line of transfer1Lines) {
     await prisma.transferLine.upsert({
-      where: { id: id(line.key) },
+      where: { id: line.id },
       create: {
-        id: id(line.key),
-        transferId: transfer1Id,
-        itemId: id(line.itemKey),
+        id: line.id,
+        transferId: TRANSFER_IDS.XFER_001,
+        itemId: line.itemId,
         issuedQuantity: d(line.qty),
         receivedQuantity: null,
       },
       update: {
-        itemId: id(line.itemKey),
+        itemId: line.itemId,
         issuedQuantity: d(line.qty),
         receivedQuantity: null,
         varianceNote: null,
@@ -769,43 +821,43 @@ async function main() {
   }
 
   await prisma.transfer.upsert({
-    where: { id: transfer2Id },
+    where: { id: TRANSFER_IDS.XFER_002 },
     create: {
-      id: transfer2Id,
-      branchId,
+      id: TRANSFER_IDS.XFER_002,
+      branchId: SEED_BRANCH_ID,
       transferNo: 'ST-2026-0158',
       status: TransferStatus.ISSUED,
       issuedAt: issuedAt2,
-      issuedBy: pharmacistId,
+      issuedBy: STAFF_IDS.PHARM_BILAL,
     },
     update: {
       transferNo: 'ST-2026-0158',
       status: TransferStatus.ISSUED,
       issuedAt: issuedAt2,
-      issuedBy: pharmacistId,
+      issuedBy: STAFF_IDS.PHARM_BILAL,
       receivedAt: null,
       receivedBy: null,
     },
   });
 
   const transfer2Lines = [
-    { key: 'xfer-002-l1', itemKey: 'item-calpol', qty: 30 },
-    { key: 'xfer-002-l2', itemKey: 'item-insulin', qty: 15 },
-    { key: 'xfer-002-l3', itemKey: 'item-brufen', qty: 60 },
+    { id: TRANSFER_LINE_IDS.XFER_002_L1, itemId: ITEM_IDS.CALPOL, qty: 30 },
+    { id: TRANSFER_LINE_IDS.XFER_002_L2, itemId: ITEM_IDS.INSULIN, qty: 15 },
+    { id: TRANSFER_LINE_IDS.XFER_002_L3, itemId: ITEM_IDS.BRUFEN, qty: 60 },
   ];
 
   for (const line of transfer2Lines) {
     await prisma.transferLine.upsert({
-      where: { id: id(line.key) },
+      where: { id: line.id },
       create: {
-        id: id(line.key),
-        transferId: transfer2Id,
-        itemId: id(line.itemKey),
+        id: line.id,
+        transferId: TRANSFER_IDS.XFER_002,
+        itemId: line.itemId,
         issuedQuantity: d(line.qty),
         receivedQuantity: null,
       },
       update: {
-        itemId: id(line.itemKey),
+        itemId: line.itemId,
         issuedQuantity: d(line.qty),
         receivedQuantity: null,
         varianceNote: null,
@@ -813,9 +865,6 @@ async function main() {
     });
   }
 
-  // -------------------------------------------------------------------------
-  // Summary
-  // -------------------------------------------------------------------------
   console.log('\nYCDO HMS seed complete (idempotent upserts)\n');
   console.log(`  Branch:       ${branch.name} [${branch.code}] ${branch.id}`);
   console.log(
@@ -825,11 +874,19 @@ async function main() {
   console.log(
     `  Items:        ${items.length} (${items.filter((i) => i.tracksStock).length} track stock)`,
   );
-  console.log(`  BranchStock:  ${stockCount} rows + ${openingMovements} OPENING movements`);
-  console.log(`  Patients:     ${patientCount} (mrNo ${branchCode}-00001 …)`);
+  console.log(`  BranchPrices: ${items.length} (branch ${SEED_BRANCH_CODE})`);
+  console.log(
+    `  RegFees:      ${Object.keys(REGISTRATION_FEES).length} categories`,
+  );
+  console.log(
+    `  BranchStock:  ${stockCount} rows + ${openingMovements} OPENING movements`,
+  );
+  console.log(`  Patients:     ${patientCount} (mrNo CH-00001 …)`);
   console.log(
     `  Transfers:    2 ISSUED (ST-2026-0142: 4 lines, ST-2026-0158: 3 lines)`,
   );
+  console.log('');
+  console.log(`  CapRover BRANCH_ID must be: ${SEED_BRANCH_ID}`);
   console.log('');
 }
 
