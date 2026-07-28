@@ -39,6 +39,12 @@ const PATIENT_IDS = [
   SEED_PATIENT_IDS.PAT_10,
 ];
 
+/** Deterministic UUIDs for concurrency-only patients (not seed catalogue). */
+function concurrencyPatientId(n: number): string {
+  const hex = n.toString(16).padStart(12, '0');
+  return `b0000001-0000-4000-8000-${hex}`;
+}
+
 type Result = { name: string; pass: boolean; detail: string };
 
 async function api(
@@ -137,7 +143,7 @@ async function ensurePatients(
 ): Promise<string[]> {
   const ids: string[] = [];
   for (let i = 0; i < count; i++) {
-    const id = seedId(`concurrency-pat-${i + 1}`);
+    const id = concurrencyPatientId(i + 1);
     const mrNo = `CH-C${String(i + 1).padStart(4, '0')}`;
     await prisma.patient.upsert({
       where: { id },
@@ -478,6 +484,81 @@ async function test6_pricingTiers(): Promise<Result> {
   };
 }
 
+async function test7_registrationSharesCounter(
+  branchId: string,
+): Promise<Result> {
+  const name = 'T7 Registration shares token counter (10 concurrent)';
+
+  // Same PKT calendar-day truncation as api/src/common/utils/date.util.ts
+  const PKT_OFFSET_MS = 5 * 60 * 60 * 1000;
+  const pkt = new Date(Date.now() + PKT_OFFSET_MS);
+  const day = new Date(
+    Date.UTC(pkt.getUTCFullYear(), pkt.getUTCMonth(), pkt.getUTCDate()) -
+      PKT_OFFSET_MS,
+  );
+
+  const maxBefore = await prisma.token.aggregate({
+    where: { branchId, tokenDate: day },
+    _max: { tokenNo: true },
+  });
+  const lastNoBefore = maxBefore._max.tokenNo ?? 0;
+
+  const responses = await Promise.all(
+    PATIENT_IDS.map((patientId) =>
+      api('POST', '/tokens/registration', {
+        doctorId: DOCTOR_ID,
+        category: 'GENERAL',
+        patientId,
+      }),
+    ),
+  );
+
+  const failed = responses.filter((r) => !okCreate(r.status));
+  if (failed.length > 0) {
+    return {
+      name,
+      pass: false,
+      detail: `${failed.length}/10 failed e.g. ${failed[0].status} ${JSON.stringify(failed[0].body)?.slice(0, 120)}`,
+    };
+  }
+
+  const nos = responses
+    .map((r) => r.body?.tokenNo as number)
+    .filter((n) => typeof n === 'number')
+    .sort((a, b) => a - b);
+
+  if (nos.length !== 10) {
+    return {
+      name,
+      pass: false,
+      detail: `expected 10 tokenNos, got ${nos.length}`,
+    };
+  }
+
+  const distinct = new Set(nos);
+  if (distinct.size !== 10) {
+    return {
+      name,
+      pass: false,
+      detail: `duplicate tokenNos: ${nos.join(', ')}`,
+    };
+  }
+
+  const expected = Array.from({ length: 10 }, (_, i) => lastNoBefore + 1 + i);
+  const contiguous = nos.every((n, i) => n === expected[i]);
+  const typesOk = responses.every(
+    (r) => r.body?.tokenType === 'REGISTRATION' && Array.isArray(r.body?.lines) && r.body.lines.length === 0,
+  );
+
+  return {
+    name,
+    pass: contiguous && typesOk,
+    detail: contiguous && typesOk
+      ? `after pharmacy lastNo=${lastNoBefore} → registration ${nos[0]}…${nos[9]} (shared sequence)`
+      : `expected ${expected[0]}…${expected[9]}, got ${nos.join(', ')}; typesOk=${typesOk}`,
+  };
+}
+
 async function main() {
   const branchId = process.env.BRANCH_ID?.trim() || SEED_BRANCH_ID;
   if (branchId !== SEED_BRANCH_ID) {
@@ -515,6 +596,7 @@ async function main() {
     results.push(await test4_ownCartNotBlocked(branchId));
     results.push(await test5_rollbackKeepsReservations(branchId));
     results.push(await test6_pricingTiers());
+    results.push(await test7_registrationSharesCounter(branchId));
   } catch (e) {
     console.error('Unhandled error:', e);
     await prisma.$disconnect();

@@ -9,6 +9,7 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
+import { CreateRegistrationTokenDto } from './dto/create-registration-token.dto';
 import { CreateTokenDto } from './dto/create-token.dto';
 import { ReturnTokenDto } from './dto/return-token.dto';
 import { TokensService } from './tokens.service';
@@ -16,6 +17,11 @@ import { TokensService } from './tokens.service';
 @Controller('tokens')
 export class TokensController {
   constructor(private readonly tokensService: TokensService) {}
+
+  @Post('registration')
+  createRegistration(@Body() dto: CreateRegistrationTokenDto) {
+    return this.tokensService.createRegistration(dto);
+  }
 
   @Post()
   create(@Body() dto: CreateTokenDto) {

@@ -4,6 +4,8 @@ export type Gender = 'MALE' | 'FEMALE' | 'OTHER';
 
 export type TokenStatus = 'ACTIVE' | 'RETURNED' | 'CANCELLED';
 
+export type TokenType = 'REGISTRATION' | 'PHARMACY' | 'LAB' | 'REFERRAL';
+
 export type ReservationStatus =
   | 'ACTIVE'
   | 'CONSUMED'
@@ -123,6 +125,8 @@ export interface Token {
   tokenDate: string;
   patientId: string;
   doctorId: string;
+  tokenType: TokenType;
+  tokenFee: DecimalString;
   category: PatientCategory;
   totalAmount: DecimalString;
   amountReceived: DecimalString;

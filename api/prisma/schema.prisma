@@ -43,6 +43,13 @@ enum TokenStatus {
   CANCELLED
 }
 
+enum TokenType {
+  REGISTRATION
+  PHARMACY
+  LAB
+  REFERRAL
+}
+
 enum MovementReason {
   RECEIPT // stock received from a store transfer
   SALE // dispensed against a token
@@ -254,15 +261,19 @@ model Token {
   id       String @id @default(uuid()) @db.Uuid
   branchId String @db.Uuid
 
-  tokenNo   Int // sequential within branch+date
+  tokenNo   Int // sequential within branch+date (shared across all TokenTypes)
   tokenDate DateTime @db.Date
 
   patientId String @db.Uuid
   doctorId  String @db.Uuid
 
-  category PatientCategory // determines which Item price column is used
+  tokenType TokenType
+  // Flat fee charged on REGISTRATION (0 for PHARMACY/LAB/REFERRAL unless set later)
+  tokenFee  Decimal @default(0) @db.Decimal(12, 2)
 
-  // Money. Total is the sum of line totals — assert this in the service layer.
+  category PatientCategory // determines which BranchItemPrice column is used
+
+  // Money. For REGISTRATION: totalAmount = tokenFee. For PHARMACY: sum of lines.
   totalAmount    Decimal @db.Decimal(12, 2)
   amountReceived Decimal @db.Decimal(12, 2)
 

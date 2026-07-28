@@ -48,7 +48,7 @@ export class StockService {
           WHERE sr."branchId" = ${branchId}::uuid
             AND sr."itemId" = i.id
             AND sr.status = 'ACTIVE'
-            AND sr."expiresAt" > NOW()
+            AND sr."expiresAt" > (NOW() AT TIME ZONE 'UTC')
             ${excludeCart}
         ), 0) AS available
       FROM items i
@@ -100,7 +100,7 @@ export class StockService {
         FROM stock_reservations
         WHERE "branchId" = ${branchId}::uuid
           AND status = 'ACTIVE'
-          AND "expiresAt" > NOW()
+          AND "expiresAt" > (NOW() AT TIME ZONE 'UTC')
         GROUP BY "itemId"
       ) r ON r."itemId" = bs."itemId"
       WHERE bs."branchId" = ${branchId}::uuid

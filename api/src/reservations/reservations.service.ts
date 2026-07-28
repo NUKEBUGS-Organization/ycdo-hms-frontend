@@ -47,12 +47,31 @@ export class ReservationsService {
     const branchId = this.branch.branchId;
 
     return this.prisma.$transaction(async (tx) => {
-      // Serialize concurrent holds on this item (same pattern as token save).
-      await tx.$queryRaw`
-        SELECT quantity FROM branch_stock
+      // Row-lock branch_stock (UPDATE … RETURNING). SELECT FOR UPDATE on a
+      // missing row locks nothing; advisory locks return void (Prisma 500).
+      let locked = await tx.$queryRaw<{ quantity: Prisma.Decimal }[]>`
+        UPDATE branch_stock
+        SET "updatedAt" = CURRENT_TIMESTAMP
         WHERE "branchId" = ${branchId}::uuid AND "itemId" = ${dto.itemId}::uuid
-        FOR UPDATE
+        RETURNING quantity
       `;
+      if (locked.length === 0) {
+        await tx.branchStock.create({
+          data: {
+            branchId,
+            itemId: dto.itemId,
+            quantity: new Prisma.Decimal(0),
+            minLimit: 0,
+            maxLimit: 0,
+          },
+        });
+        locked = await tx.$queryRaw<{ quantity: Prisma.Decimal }[]>`
+          UPDATE branch_stock
+          SET "updatedAt" = CURRENT_TIMESTAMP
+          WHERE "branchId" = ${branchId}::uuid AND "itemId" = ${dto.itemId}::uuid
+          RETURNING quantity
+        `;
+      }
 
       const available = await this.stock.getAvailable([dto.itemId], { db: tx });
       const avail = available.get(dto.itemId) ?? new Prisma.Decimal(0);

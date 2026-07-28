@@ -9,6 +9,7 @@ import {
   Prisma,
   ReceivableStatus,
   TokenStatus,
+  TokenType,
 } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { resolveUnitPrice } from '../catalogue/pricing';
@@ -23,6 +24,7 @@ import {
 } from '../common/utils/money.util';
 import { PatientsService } from '../patients/patients.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { CreateRegistrationTokenDto } from './dto/create-registration-token.dto';
 import { CreateTokenDto } from './dto/create-token.dto';
 import { ReturnTokenDto } from './dto/return-token.dto';
 
@@ -130,25 +132,8 @@ export class TokensService {
         }
       }
 
-      // --- 2. Token number (branch + date) ---
-      await tx.$executeRaw`
-        INSERT INTO token_counters ("branchId", date, "lastNo")
-        VALUES (${branchId}::uuid, ${today}::date, 0)
-        ON CONFLICT ("branchId", date) DO NOTHING
-      `;
-
-      const counters = await tx.$queryRaw<{ lastNo: number }[]>`
-        SELECT "lastNo" FROM token_counters
-        WHERE "branchId" = ${branchId}::uuid AND date = ${today}::date
-        FOR UPDATE
-      `;
-      const tokenNo = (counters[0]?.lastNo ?? 0) + 1;
-
-      await tx.$executeRaw`
-        UPDATE token_counters
-        SET "lastNo" = ${tokenNo}
-        WHERE "branchId" = ${branchId}::uuid AND date = ${today}::date
-      `;
+      // --- 2. Token number (branch + date — shared across all TokenTypes) ---
+      const tokenNo = await this.allocateTokenNo(tx, branchId, today);
 
       // --- 3. Line pricing (BranchItemPrice only) ---
       const lineData = dto.lines.map((line) => {
@@ -202,6 +187,8 @@ export class TokensService {
           tokenDate: today,
           patientId,
           doctorId: dto.doctorId,
+          tokenType: TokenType.PHARMACY,
+          tokenFee: new Prisma.Decimal(0),
           category: dto.category,
           totalAmount,
           amountReceived,
@@ -253,9 +240,10 @@ export class TokensService {
         // Lock stock rows first, then re-check availability excluding this cart.
         for (const [itemId, needed] of needByItem) {
           const locked = await tx.$queryRaw<{ quantity: Prisma.Decimal }[]>`
-            SELECT quantity FROM branch_stock
+            UPDATE branch_stock
+            SET "updatedAt" = CURRENT_TIMESTAMP
             WHERE "branchId" = ${branchId}::uuid AND "itemId" = ${itemId}::uuid
-            FOR UPDATE
+            RETURNING quantity
           `;
           if (locked.length === 0) {
             const name =
@@ -346,6 +334,117 @@ export class TokensService {
         include: tokenInclude,
       });
     });
+  }
+
+  /**
+   * REGISTRATION token — flat fee, no lines, always paid in full.
+   * Shares TokenCounter (branch+date) with pharmacy / lab / referral.
+   */
+  async createRegistration(dto: CreateRegistrationTokenDto) {
+    if (!dto.patientId && !dto.newPatient) {
+      throw new BadRequestException(
+        'Either patientId or newPatient is required',
+      );
+    }
+    if (dto.patientId && dto.newPatient) {
+      throw new BadRequestException(
+        'Provide patientId or newPatient, not both',
+      );
+    }
+
+    const branchId = this.branch.branchId;
+    const branchCode = this.branch.branchCode;
+    const today = pktDateOnly(nowPkt());
+
+    return this.prisma.$transaction(async (tx) => {
+      let patientId: string;
+      if (dto.newPatient) {
+        const patient = await this.patients.createWithTx(tx, dto.newPatient);
+        patientId = patient.id;
+      } else {
+        const existing = await tx.patient.findFirst({
+          where: { id: dto.patientId!, branchId },
+          select: { id: true },
+        });
+        if (!existing) {
+          throw new NotFoundException(`Patient ${dto.patientId} not found`);
+        }
+        patientId = existing.id;
+      }
+
+      const doctor = await tx.staff.findFirst({
+        where: { id: dto.doctorId, active: true },
+        select: { id: true },
+      });
+      if (!doctor) {
+        throw new NotFoundException(`Doctor ${dto.doctorId} not found`);
+      }
+
+      const fee = await tx.registrationFee.findUnique({
+        where: {
+          branchId_category: { branchId, category: dto.category },
+        },
+      });
+      if (!fee) {
+        throw new BadRequestException(
+          `No RegistrationFee for branch ${branchCode} (${branchId}) category ${dto.category} — seed registration fees before issuing registration tokens`,
+        );
+      }
+
+      const tokenFee = fee.amount;
+      const tokenNo = await this.allocateTokenNo(tx, branchId, today);
+      const tokenId = randomUUID();
+
+      await tx.token.create({
+        data: {
+          id: tokenId,
+          branchId,
+          tokenNo,
+          tokenDate: today,
+          patientId,
+          doctorId: dto.doctorId,
+          tokenType: TokenType.REGISTRATION,
+          tokenFee,
+          category: dto.category,
+          totalAmount: tokenFee,
+          amountReceived: tokenFee,
+          createdBy: SYSTEM_ACTOR_ID,
+        },
+      });
+
+      return tx.token.findUniqueOrThrow({
+        where: { id: tokenId },
+        include: tokenInclude,
+      });
+    });
+  }
+
+  /** Shared per-branch-per-day sequence — not per TokenType. */
+  private async allocateTokenNo(
+    tx: Prisma.TransactionClient,
+    branchId: string,
+    today: Date,
+  ): Promise<number> {
+    await tx.$executeRaw`
+      INSERT INTO token_counters ("branchId", date, "lastNo")
+      VALUES (${branchId}::uuid, ${today}::date, 0)
+      ON CONFLICT ("branchId", date) DO NOTHING
+    `;
+
+    const counters = await tx.$queryRaw<{ lastNo: number }[]>`
+      SELECT "lastNo" FROM token_counters
+      WHERE "branchId" = ${branchId}::uuid AND date = ${today}::date
+      FOR UPDATE
+    `;
+    const tokenNo = (counters[0]?.lastNo ?? 0) + 1;
+
+    await tx.$executeRaw`
+      UPDATE token_counters
+      SET "lastNo" = ${tokenNo}
+      WHERE "branchId" = ${branchId}::uuid AND date = ${today}::date
+    `;
+
+    return tokenNo;
   }
 
   async findOne(id: string) {
