@@ -1,5 +1,5 @@
-import { money, round2, toNum } from '../lib/money';
 import { CATEGORY_LABEL } from '../lib/categories';
+import { money, round2, toNum } from '../lib/money';
 import type { Token } from '../types/api';
 
 const HOSPITAL =
@@ -36,9 +36,11 @@ type Props = {
 /** Print-only slip — hidden on screen, shown via @media print (80mm thermal). */
 export function TokenPrintSlip({ token }: Props) {
   const lines = token.lines ?? [];
+  const isRegistration = token.tokenType === 'REGISTRATION';
   const total = toNum(token.totalAmount);
   const received = toNum(token.amountReceived);
   const balance = round2(Math.max(total - received, 0));
+  const fee = toNum(token.tokenFee);
   const patient = token.patient;
   const issuedAt = token.createdAt || token.tokenDate;
 
@@ -51,6 +53,12 @@ export function TokenPrintSlip({ token }: Props) {
 
       <div className="tps-token-no">
         TOKEN {BRANCH_CODE}-{token.tokenNo}
+        {token.tokenType === 'REGISTRATION' ? (
+          <div className="tps-token-phone">Registration</div>
+        ) : null}
+        {patient?.phone ? (
+          <div className="tps-token-phone">{patient.phone}</div>
+        ) : null}
       </div>
 
       <div className="tps-datetime">{formatPktDateTime(issuedAt)} PKT</div>
@@ -63,6 +71,10 @@ export function TokenPrintSlip({ token }: Props) {
         <div className="tps-row">
           <span className="tps-label">MR No</span>
           <span className="tps-value">{patient?.mrNo ?? '—'}</span>
+        </div>
+        <div className="tps-row">
+          <span className="tps-label">Phone</span>
+          <span className="tps-value">{patient?.phone ?? '—'}</span>
         </div>
         <div className="tps-row">
           <span className="tps-label">Age / Sex</span>
@@ -91,14 +103,23 @@ export function TokenPrintSlip({ token }: Props) {
           </tr>
         </thead>
         <tbody>
-          {lines.map((line) => (
-            <tr key={line.id}>
-              <td className="tps-item">{line.item?.name ?? line.itemId}</td>
-              <td className="tps-num">{String(line.quantity)}</td>
-              <td className="tps-num">{money(toNum(line.unitPrice))}</td>
-              <td className="tps-num">{money(toNum(line.lineTotal))}</td>
+          {isRegistration ? (
+            <tr>
+              <td className="tps-item">Registration fee</td>
+              <td className="tps-num">1</td>
+              <td className="tps-num">{money(fee || total)}</td>
+              <td className="tps-num">{money(fee || total)}</td>
             </tr>
-          ))}
+          ) : (
+            lines.map((line) => (
+              <tr key={line.id}>
+                <td className="tps-item">{line.item?.name ?? line.itemId}</td>
+                <td className="tps-num">{String(line.quantity)}</td>
+                <td className="tps-num">{money(toNum(line.unitPrice))}</td>
+                <td className="tps-num">{money(toNum(line.lineTotal))}</td>
+              </tr>
+            ))
+          )}
         </tbody>
       </table>
 
