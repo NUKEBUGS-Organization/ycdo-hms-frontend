@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { printSavedToken, reprintTokenById } from '../components/TokenPrintHost';
 import { useHotkeys } from '../hooks/useHotkeys';
 import { api, ApiError } from '../lib/api';
@@ -20,7 +21,6 @@ import { CATEGORIES } from '../lib/categories';
 import type {
   HealthResponse,
   ItemUnitPrice,
-  Patient,
   PatientCategory,
   ReservationCreateResult,
   StaffMember,
@@ -35,10 +35,11 @@ import {
   type LastSaved,
   type ReceivableFields,
 } from './reception/cartTypes';
+import { DispenseLookup } from './reception/DispenseLookup';
 import { DoctorSelect } from './reception/DoctorSelect';
+import type { DispenseHandoff } from './reception/handoff';
 import { ItemSearch } from './reception/ItemSearch';
 import { MoneyBar } from './reception/MoneyBar';
-import { PatientPanel } from './reception/PatientPanel';
 
 const BRANCH_CODE =
   (import.meta.env.VITE_BRANCH_CODE as string | undefined) || 'CH';
@@ -50,16 +51,17 @@ function newCartId() {
   return crypto.randomUUID();
 }
 
-export function ReceptionPage() {
-  const patientSearchRef = useRef<HTMLInputElement>(null);
+export function DispensePage() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const lookupSearchRef = useRef<HTMLInputElement>(null);
   const itemSearchRef = useRef<HTMLInputElement>(null);
   const doseRef = useRef<HTMLInputElement>(null);
   const receivedRef = useRef<HTMLInputElement>(null);
   const doctorRef = useRef<HTMLSelectElement>(null);
 
+  const [loaded, setLoaded] = useState<DispenseHandoff | null>(null);
   const [cartId, setCartId] = useState(newCartId);
-  const [patient, setPatient] = useState<Patient | null>(null);
-  const [showNewPatient, setShowNewPatient] = useState(false);
   const [category, setCategory] = useState<PatientCategory>('GENERAL');
   const [doctorId, setDoctorId] = useState('');
   const [lines, setLines] = useState<CartLine[]>([]);
@@ -153,21 +155,34 @@ export function ReceptionPage() {
   }, []);
 
   useEffect(() => {
-    queueMicrotask(() => patientSearchRef.current?.focus());
-  }, []);
-
-  useEffect(() => {
     return () => {
       void releaseCart(cartIdRef.current);
     };
   }, [releaseCart]);
 
-  const resetToken = useCallback(async () => {
+  const applyHandoff = useCallback((handoff: DispenseHandoff) => {
+    setLoaded(handoff);
+    setCategory(handoff.category);
+    setDoctorId(handoff.doctorId);
+    setSaveError(null);
+    queueMicrotask(() => itemSearchRef.current?.focus());
+  }, []);
+
+  // Registration → Dispense handoff via router state
+  useEffect(() => {
+    const state = location.state as { handoff?: DispenseHandoff } | null;
+    if (state?.handoff) {
+      applyHandoff(state.handoff);
+      navigate('/dispense', { replace: true, state: {} });
+    }
+  }, [location.state, applyHandoff, navigate]);
+
+  const unloadToken = useCallback(async () => {
     await releaseCart(cartIdRef.current);
     const next = newCartId();
+    cartIdRef.current = next;
     setCartId(next);
-    setPatient(null);
-    setShowNewPatient(false);
+    setLoaded(null);
     setCategory('GENERAL');
     setDoctorId('');
     setLines([]);
@@ -183,8 +198,30 @@ export function ReceptionPage() {
     setSaveError(null);
     setHoldsExpired(false);
     setLastActivity(Date.now());
-    queueMicrotask(() => itemSearchRef.current?.focus());
+    queueMicrotask(() => lookupSearchRef.current?.focus());
   }, [releaseCart]);
+
+  const resetAfterSave = useCallback(() => {
+    const next = newCartId();
+    cartIdRef.current = next;
+    setCartId(next);
+    setLoaded(null);
+    setCategory('GENERAL');
+    setDoctorId('');
+    setLines([]);
+    setDraft(null);
+    setReceived('0.00');
+    setReceivedTouched(false);
+    setReceivable({
+      guardianName: '',
+      guardianPhone: '',
+      recommendedBy: '',
+      promisedDate: '',
+    });
+    setHoldsExpired(false);
+    setLastActivity(Date.now());
+    queueMicrotask(() => lookupSearchRef.current?.focus());
+  }, []);
 
   const onCategoryChange = (c: PatientCategory) => {
     setCategory(c);
@@ -230,7 +267,7 @@ export function ReceptionPage() {
   };
 
   const commitDose = async () => {
-    if (!draft) return;
+    if (!draft || !loaded) return;
     const dose = toNum(draft.dose);
     const feed = toNum(draft.feed);
     const days = toNum(draft.days);
@@ -391,12 +428,12 @@ export function ReceptionPage() {
 
   const saveDisabledReason = !online
     ? 'Server offline'
-    : !patient
-      ? 'Select a patient'
+    : !loaded
+      ? 'Load a token first'
       : !doctorId
         ? 'Select a doctor'
         : lines.length === 0
-          ? 'Cart is empty'
+          ? 'Add at least one item'
           : lines.some((l) => l.error)
             ? 'Fix lines in error'
             : '';
@@ -404,15 +441,16 @@ export function ReceptionPage() {
   const saveDisabled = saveDisabledReason.length > 0;
 
   const save = async () => {
-    if (saveDisabled || saving || !patient) return;
+    if (saveDisabled || saving || !loaded) return;
     setSaving(true);
     setSaveError(null);
     try {
       const body: Record<string, unknown> = {
         cartId: cartIdRef.current,
-        patientId: patient.id,
+        patientId: loaded.patient.id,
         doctorId,
         category,
+        previousTokenId: loaded.previousTokenId,
         amountReceived: receivedNum,
         lines: lines.map((l) => ({
           itemId: l.itemId,
@@ -432,36 +470,18 @@ export function ReceptionPage() {
       }
 
       const token = await api<Token>('/tokens', { method: 'POST', body });
-      // Token is committed — print is best-effort and must never undo the save.
       setLastSaved({
         tokenId: token.id,
         tokenNo: token.tokenNo,
         label: `Token ${BRANCH_CODE}-${token.tokenNo} saved`,
       });
       printSavedToken(token);
-      // Don't release cart — server consumed reservations. Just reset local.
-      const next = newCartId();
-      cartIdRef.current = next;
-      setCartId(next);
-      setPatient(null);
-      setShowNewPatient(false);
-      setCategory('GENERAL');
-      setDoctorId('');
-      setLines([]);
-      setDraft(null);
-      setReceived('0.00');
-      setReceivedTouched(false);
-      setReceivable({
-        guardianName: '',
-        guardianPhone: '',
-        recommendedBy: '',
-        promisedDate: '',
-      });
-      setHoldsExpired(false);
-      setLastActivity(Date.now());
-      queueMicrotask(() => itemSearchRef.current?.focus());
+      resetAfterSave();
     } catch (e: unknown) {
-      if (e instanceof ApiError && e.isConflict) {
+      if (e instanceof ApiError && e.status === 400) {
+        // previousTokenId mismatch / validation — blocking, not line-level
+        setSaveError(e.message);
+      } else if (e instanceof ApiError && e.isConflict) {
         const msg = e.message;
         const avail = parseAvailableFromConflict(msg);
         setLines((prev) =>
@@ -489,14 +509,13 @@ export function ReceptionPage() {
   const abandon = async () => {
     if (
       !window.confirm(
-        'Abandon this token? Stock holds will be released.',
+        'Abandon this dispense? Stock holds will be released.',
       )
     ) {
       return;
     }
     setLastSaved(null);
-    await resetToken();
-    queueMicrotask(() => patientSearchRef.current?.focus());
+    await unloadToken();
   };
 
   const reprint = async () => {
@@ -510,17 +529,20 @@ export function ReceptionPage() {
 
   useHotkeys({
     F1: () => {
-      setShowNewPatient(false);
-      patientSearchRef.current?.focus();
+      if (!loaded) lookupSearchRef.current?.focus();
     },
-    F2: () => {
-      setPatient(null);
-      setShowNewPatient(true);
+    F3: () => {
+      if (loaded) itemSearchRef.current?.focus();
     },
-    F3: () => itemSearchRef.current?.focus(),
-    F4: () => cycleCategory(),
-    F6: () => receivedRef.current?.focus(),
-    F9: () => void save(),
+    F4: () => {
+      if (loaded) cycleCategory();
+    },
+    F6: () => {
+      if (loaded) receivedRef.current?.focus();
+    },
+    F9: () => {
+      if (loaded) void save();
+    },
     Escape: () => {
       if (draft) {
         setDraft(null);
@@ -533,6 +555,43 @@ export function ReceptionPage() {
       if (e.ctrlKey) void abandon();
     },
   });
+
+  if (!loaded) {
+    return (
+      <section className="flex min-h-0 flex-1 flex-col gap-0 overflow-hidden">
+        {!online && (
+          <div className="mb-2 shrink-0 rounded-lg border-2 border-red-700 bg-red-600 px-3 py-2 text-base font-bold text-white">
+            Cannot reach server. Do not continue — your work will not be saved.
+          </div>
+        )}
+        {lastSaved && (
+          <div className="mb-2 flex shrink-0 items-center gap-3 rounded-lg border border-emerald-600 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-950">
+            <span>{lastSaved.label}</span>
+            <button
+              type="button"
+              className="text-primary underline hover:text-primary-hover"
+              onClick={() => void reprint()}
+            >
+              Reprint
+            </button>
+          </div>
+        )}
+        {saveError && (
+          <div className="mb-2 shrink-0 rounded-lg border border-red-700 bg-red-50 px-3 py-2 text-sm font-semibold text-red-900">
+            {saveError}
+          </div>
+        )}
+        <div className="min-h-0 flex-1 overflow-auto py-2">
+          <DispenseLookup
+            searchRef={lookupSearchRef}
+            onLoad={applyHandoff}
+          />
+        </div>
+      </section>
+    );
+  }
+
+  const patient = loaded.patient;
 
   return (
     <section className="flex min-h-0 flex-1 flex-col gap-0 overflow-hidden">
@@ -563,19 +622,35 @@ export function ReceptionPage() {
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-hidden lg:grid-cols-2">
         <div className="flex min-h-0 flex-col gap-2 overflow-auto">
-          <PatientPanel
-            patient={patient}
-            onSelect={(p) => {
-              setPatient(p);
-              void bumpActivity();
-              queueMicrotask(() => itemSearchRef.current?.focus());
-            }}
-            onClear={() => setPatient(null)}
-            searchRef={patientSearchRef}
-            showNewForm={showNewPatient}
-            onToggleNew={setShowNewPatient}
-            onActivity={() => void bumpActivity()}
-          />
+          <div className="card-surface p-4">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  Dispensing against
+                </div>
+                <div className="mt-0.5 font-mono text-sm font-semibold text-primary">
+                  {BRANCH_CODE}-{loaded.tokenNo}
+                </div>
+                <div className="mt-2 text-lg font-semibold leading-tight text-slate-800">
+                  {patient.name}
+                </div>
+                <div className="mt-1 font-mono text-sm tabular-nums text-slate-500">
+                  {patient.mrNo} · {patient.gender[0]}
+                  {patient.ageYears != null ? ` · ${patient.ageYears}y` : ''}
+                </div>
+                {patient.phone && (
+                  <div className="text-sm text-slate-600">{patient.phone}</div>
+                )}
+              </div>
+              <button
+                type="button"
+                className="h-9 rounded-lg border border-line px-3 text-sm font-semibold text-slate-600 hover:bg-slate-50"
+                onClick={() => void unloadToken()}
+              >
+                Change
+              </button>
+            </div>
+          </div>
           <div className="card-surface space-y-3 p-4">
             <CategoryControl value={category} onChange={onCategoryChange} />
             <DoctorSelect

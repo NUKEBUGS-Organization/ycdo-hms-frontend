@@ -2,7 +2,7 @@ export type PatientCategory = 'DESERVING' | 'POOR' | 'MEMBER' | 'GENERAL';
 
 export type Gender = 'MALE' | 'FEMALE' | 'OTHER';
 
-export type TokenStatus = 'ACTIVE' | 'RETURNED' | 'CANCELLED';
+export type TokenStatus = 'ACTIVE' | 'RETURNED' | 'REFUNDED' | 'CANCELLED';
 
 export type TokenType = 'REGISTRATION' | 'PHARMACY' | 'LAB' | 'REFERRAL';
 
@@ -86,14 +86,72 @@ export interface CreatePatientInput {
   guardianPhone?: string;
 }
 
+export interface PatientHistoryLine {
+  itemName: string;
+  quantity: DecimalString;
+  dose: number;
+  feed: DecimalString;
+  days: number;
+  fixDose: number;
+}
+
+export interface PatientHistoryToken {
+  tokenDate: string;
+  tokenNo: number;
+  tokenType: TokenType;
+  category: PatientCategory;
+  doctorName: string;
+  status: TokenStatus;
+  createdAt: string;
+  lines: PatientHistoryLine[];
+}
+
 export interface PatientWithTokens extends Patient {
-  tokens: Array<{
-    tokenDate: string;
+  tokens: PatientHistoryToken[];
+}
+
+export interface PatientListResponse {
+  total: number;
+  page: number;
+  limit: number;
+  data: Patient[];
+}
+
+export interface TokenListResponse {
+  total: number;
+  page: number;
+  limit: number;
+  data: Array<{
+    id: string;
+    branchId: string;
     tokenNo: number;
-    doctorName: string;
+    tokenDate: string;
+    patientId: string;
+    doctorId: string;
+    tokenType: TokenType;
+    tokenFee: DecimalString;
+    category: PatientCategory;
     totalAmount: DecimalString;
+    amountReceived: DecimalString;
+    previousTokenId: string | null;
     status: TokenStatus;
+    createdAt: string;
+    patient?: Pick<
+      Patient,
+      'id' | 'mrNo' | 'name' | 'gender' | 'ageYears' | 'phone'
+    >;
+    doctor?: { id: string; fullName: string };
   }>;
+}
+
+export interface StockRow {
+  itemId: string;
+  itemName: string;
+  onHand: DecimalString;
+  reserved: DecimalString;
+  available: DecimalString;
+  minLimit: number;
+  maxLimit: number;
 }
 
 export interface ReservationCreateResult extends Partial<Reservation> {

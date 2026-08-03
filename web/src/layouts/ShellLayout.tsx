@@ -2,7 +2,8 @@ import { useQuery } from '@tanstack/react-query';
 import {
   ClipboardList,
   Package,
-  Stethoscope,
+  Pill,
+  UserPlus,
   Users,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -39,15 +40,20 @@ function formatPkt(d: Date): string {
 }
 
 const NAV = [
-  { to: '/reception', label: 'Reception', icon: Stethoscope },
+  { to: '/registration', label: 'Registration', icon: UserPlus },
+  { to: '/dispense', label: 'Dispense', icon: Pill },
   { to: '/patients', label: 'Patients', icon: Users },
   { to: '/stock', label: 'Stock', icon: Package },
 ] as const;
 
 const PAGE_META: Record<string, { title: string; subtitle: string }> = {
-  '/reception': {
-    title: 'Reception',
-    subtitle: 'Token desk',
+  '/registration': {
+    title: 'Registration',
+    subtitle: 'Issue registration token',
+  },
+  '/dispense': {
+    title: 'Dispense',
+    subtitle: 'Pharmacy counter',
   },
   '/patients': {
     title: 'Patients',
