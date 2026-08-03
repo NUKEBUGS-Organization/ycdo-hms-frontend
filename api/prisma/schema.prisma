@@ -39,7 +39,8 @@ enum Gender {
 
 enum TokenStatus {
   ACTIVE
-  RETURNED // fully reversed via TokenReturn
+  RETURNED // fully reversed via TokenReturn (branch counter path)
+  REFUNDED // voided via org-side refundFlag (inbound sync path)
   CANCELLED
 }
 
@@ -281,6 +282,15 @@ model Token {
   previousTokenId String? @db.Uuid
 
   status TokenStatus @default(ACTIVE)
+
+  // Dormant until org-side flagging + inbound sync exist (later phase).
+  // TokenReturn is the current, working return path — do not remove it.
+  // These fields exist so the reversal logic below can be tested now and
+  // wired to real org sync later without another migration.
+  refundFlagged   Boolean   @default(false)
+  refundFlaggedBy String?   @db.Uuid // org authoriser (finance/coordinator), not a branch user
+  refundFlaggedAt DateTime?
+  refundReason    String?
 
   createdAt DateTime  @default(now())
   createdBy String    @db.Uuid

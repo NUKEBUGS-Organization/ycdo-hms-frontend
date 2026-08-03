@@ -74,6 +74,60 @@ export class PatientsService {
     });
   }
 
+  async list(opts: { q: string; page: number; limit: number }) {
+    const take = Math.min(Math.max(opts.limit, 1), 100);
+    const page = Math.max(opts.page, 1);
+    const skip = (page - 1) * take;
+    const term = opts.q.trim();
+
+    const where: Prisma.PatientWhereInput = {
+      branchId: this.branch.branchId,
+    };
+
+    if (term) {
+      where.OR = [
+        { name: { contains: term, mode: 'insensitive' } },
+        { phone: { contains: term } },
+        { cnic: { contains: term } },
+        { mrNo: { contains: term, mode: 'insensitive' } },
+      ];
+    }
+
+    const [total, data] = await this.prisma.$transaction([
+      this.prisma.patient.count({ where }),
+      this.prisma.patient.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }],
+        skip,
+        take,
+        select: {
+          id: true,
+          branchId: true,
+          mrNo: true,
+          name: true,
+          gender: true,
+          dateOfBirth: true,
+          ageYears: true,
+          phone: true,
+          cnic: true,
+          address: true,
+          guardianName: true,
+          guardianPhone: true,
+          linkedPatientId: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      }),
+    ]);
+
+    return {
+      total,
+      page,
+      limit: take,
+      data,
+    };
+  }
+
   async search(q: string) {
     const term = q.trim();
     if (!term) {
@@ -100,14 +154,25 @@ export class PatientsService {
       where: { id, branchId: this.branch.branchId },
       include: {
         tokens: {
-          take: 10,
           orderBy: [{ tokenDate: 'desc' }, { createdAt: 'desc' }],
           select: {
             tokenDate: true,
             tokenNo: true,
-            totalAmount: true,
             status: true,
+            tokenType: true,
+            category: true,
+            createdAt: true,
             doctor: { select: { fullName: true } },
+            lines: {
+              select: {
+                quantity: true,
+                dose: true,
+                feed: true,
+                days: true,
+                fixDose: true,
+                item: { select: { name: true } },
+              },
+            },
           },
         },
       },
@@ -123,9 +188,19 @@ export class PatientsService {
       tokens: tokens.map((t) => ({
         tokenDate: t.tokenDate,
         tokenNo: t.tokenNo,
+        tokenType: t.tokenType,
+        category: t.category,
         doctorName: t.doctor.fullName,
-        totalAmount: t.totalAmount,
         status: t.status,
+        createdAt: t.createdAt,
+        lines: t.lines.map((l) => ({
+          itemName: l.item.name,
+          quantity: l.quantity,
+          dose: l.dose,
+          feed: l.feed,
+          days: l.days,
+          fixDose: l.fixDose,
+        })),
       })),
     };
   }

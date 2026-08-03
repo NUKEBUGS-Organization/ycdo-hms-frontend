@@ -2,7 +2,6 @@ import { PatientCategory, Prisma } from '@prisma/client';
 import { Type, Transform } from 'class-transformer';
 import {
   Allow,
-  ArrayMinSize,
   IsArray,
   IsDate,
   IsEnum,
@@ -11,10 +10,8 @@ import {
   IsString,
   IsUUID,
   Min,
-  ValidateIf,
   ValidateNested,
 } from 'class-validator';
-import { CreatePatientDto } from '../../patients/dto/create-patient.dto';
 
 export class TokenLineDto {
   @IsUUID()
@@ -59,18 +56,13 @@ export class ReceivableDto {
   promisedDate?: Date;
 }
 
+/** Pharmacy dispense — existing patient only; always chained from a prior token. */
 export class CreateTokenDto {
   @IsUUID()
   cartId!: string;
 
-  @ValidateIf((o: CreateTokenDto) => !o.newPatient)
   @IsUUID()
-  patientId?: string;
-
-  @ValidateIf((o: CreateTokenDto) => !o.patientId)
-  @ValidateNested()
-  @Type(() => CreatePatientDto)
-  newPatient?: CreatePatientDto;
+  patientId!: string;
 
   @IsUUID()
   doctorId!: string;
@@ -78,16 +70,15 @@ export class CreateTokenDto {
   @IsEnum(PatientCategory)
   category!: PatientCategory;
 
-  @IsOptional()
+  /** Registration token (or earlier pharmacy token on a return visit). Required. */
   @IsUUID()
-  previousTokenId?: string;
+  previousTokenId!: string;
 
   @Allow()
   @Transform(({ value }) => new Prisma.Decimal(value))
   amountReceived!: Prisma.Decimal;
 
   @IsArray()
-  @ArrayMinSize(1)
   @ValidateNested({ each: true })
   @Type(() => TokenLineDto)
   lines!: TokenLineDto[];

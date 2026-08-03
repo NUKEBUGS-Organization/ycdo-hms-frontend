@@ -1,8 +1,10 @@
 import {
   Body,
   Controller,
+  DefaultValuePipe,
   Get,
   Param,
+  ParseIntPipe,
   ParseUUIDPipe,
   Patch,
   Post,
@@ -19,6 +21,19 @@ export class PatientsController {
   @Post()
   create(@Body() dto: CreatePatientDto) {
     return this.patientsService.create(dto);
+  }
+
+  @Get()
+  list(
+    @Query('q') q?: string,
+    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page?: number,
+    @Query('limit', new DefaultValuePipe(50), ParseIntPipe) limit?: number,
+  ) {
+    return this.patientsService.list({
+      q: q ?? '',
+      page: page ?? 1,
+      limit: limit ?? 50,
+    });
   }
 
   @Get('search')
