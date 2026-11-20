@@ -1,8 +1,6 @@
 node_modules/
-dist/
-.env.*.local
-deploy.tar.gz
+.env
+.env.*
 *.tar.gz
-
-/generated/prisma
-config.bat
+__pycache__/
+.vscode/
