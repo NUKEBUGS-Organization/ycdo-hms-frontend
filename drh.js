@@ -716,10 +716,12 @@
     render: async (c) => {
       const list = await c.cached('accounts', () => api.get('/drh/accounts'));
       c.state.accounts = list;
-      return h.page('HMS accounts', 'Logins for the DRH centres and the police. You type each password yourself and give it to the person directly.', h.btn({ label: 'New account', action: 'accountNew', size: 'sm' }))
+      const shown = c.state.pwShown || (c.state.pwShown = new Set());
+      return h.page('HMS accounts', 'Logins for the DRH centres and the police. As in HRMS, YCDO IT can see each current password here to give it to the person, and change it any time.', h.btn({ label: 'New account', action: 'accountNew', size: 'sm' }))
         + h.card({ title: `Accounts (${h.num(list.length)})`, body: h.table({ columns: [
           { key: 'n', label: 'Name', render: (a) => `<b>${h.esc(a.name || '—')}</b>${a.designation ? `<div class="muted small">${h.esc(a.designation)}</div>` : ''}` },
           { key: 'e', label: 'Email', render: (a) => `<span class="mono">${h.esc(a.email)}</span>` },
+          { key: 'p', label: 'Password', render: (a) => (a.password ? `<span class="mono">${shown.has(a.id) ? h.esc(a.password) : '••••••••'}</span> ${h.btn({ label: shown.has(a.id) ? 'Hide' : 'Show', action: 'accountPwToggle', arg: a.id, size: 'sm', tone: 'secondary' })}${a.passwordChangedAt ? `<div class="muted small">set ${h.date(a.passwordChangedAt)}</div>` : ''}` : '<span class="muted">not stored</span>') },
           { key: 'r', label: 'Role', render: (a) => h.badge(ROLE_LABEL[a.role] || a.role, a.role === 'POLICE_VIEWER' ? 'dark' : 'info') },
           { key: 'c', label: 'Centres', render: (a) => (a.role === 'DRH_STAFF' ? h.esc((a.centreIds || []).map(centreShort).filter(Boolean).join(', ') || '—') : '<span class="muted">both (view)</span>') },
           { key: 'a', label: 'Status', render: (a) => (a.isActive ? h.badge('Active', 'ok') : h.badge('Disabled', 'danger')) },
@@ -737,7 +739,7 @@
       h.field({ id: 'accDesignation', label: 'Designation', value: a ? a.designation || '' : '', placeholder: 'e.g. CPO Multan, Admission Officer', maxlength: 80 }),
       isNew ? h.field({ id: 'accEmail', label: 'Email (sign-in)', type: 'email', required: true, autocomplete: 'off' }) : h.field({ id: 'accEmailRo', label: 'Email (sign-in)', value: a.email, readonly: true }),
       isNew ? h.field({ id: 'accRole', label: 'Role', type: 'select', value: role, options: [{ value: 'DRH_STAFF', label: 'DRH staff (register and update at own centres)' }, { value: 'POLICE_VIEWER', label: 'Police (view only, both centres)' }] }) : h.field({ id: 'accRoleRo', label: 'Role', value: ROLE_LABEL[a.role] || a.role, readonly: true }),
-      h.field({ id: 'accPassword', label: isNew ? 'Password' : 'New password (leave empty to keep)', type: 'password', required: isNew, autocomplete: 'new-password', hint: 'Type it yourself, at least 8 characters. It is never shown again.' }),
+      h.field({ id: 'accPassword', label: isNew ? 'Password (optional)' : 'New password (leave empty to keep)', type: 'text', autocomplete: 'off', hint: isNew ? 'Leave empty and the system makes one. You can see and change it on this page any time, like HRMS.' : 'At least 8 characters. The new password shows in the list.' }),
       ...(isNew ? [] : [`<div class="field"><label>&nbsp;</label><label class="chk"><input type="checkbox" name="accActive" ${a.isActive ? 'checked' : ''}> Account active (can sign in)</label></div>`]),
     ].join('')}${boxes}</div><div class="form-actions">${h.btn({ label: 'Cancel', action: 'closeModal', tone: 'secondary' })}${h.btn({ label: isNew ? 'Create account' : 'Save changes', action: 'accountSave', arg: a ? a.id : '', form: 'acc-form' })}</div></form>`;
   }
@@ -986,6 +988,11 @@
 
     /* ── accounts ── */
     accountNew: () => window.HMS.modal('New HMS account', accountForm(null)),
+    accountPwToggle: (id) => {
+      const s = window.HMS.state.pwShown || (window.HMS.state.pwShown = new Set());
+      if (s.has(id)) s.delete(id); else s.add(id);
+      window.HMS.render();
+    },
     accountEdit: (id) => { const a = (window.HMS.state.accounts || []).find((x) => x.id === id); if (a) window.HMS.modal(`Edit · ${a.name || a.email}`, accountForm(a)); },
     accountSave: async (id, form) => {
       const centreIds = meta().centres.map((x) => x.id).filter((cid) => form['centre_' + cid]);
@@ -996,12 +1003,11 @@
       if (!id) {
         const email = String(form.accEmail || '').trim().toLowerCase();
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { window.HMS.toast('Enter a valid email', 'danger'); return; }
-        if (!password) { window.HMS.toast('Type a password for the new account', 'danger'); return; }
         const role = form.accRole;
         if (role === 'DRH_STAFF' && !centreIds.length) { window.HMS.toast('Tick at least one centre for a DRH staff account', 'danger'); return; }
-        await api.post('/drh/accounts', { email, name, designation: designation || undefined, role, centreIds: role === 'DRH_STAFF' ? centreIds : [], password });
+        await api.post('/drh/accounts', { email, name, designation: designation || undefined, role, centreIds: role === 'DRH_STAFF' ? centreIds : [], ...(password ? { password } : {}) });
         window.HMS.closeModal(); window.HMS.dropCached('accounts'); window.HMS.render();
-        return `Account created for ${name}. Give the password to them directly.`;
+        return `Account created for ${name}. Press Show in the Password column to see the password.`;
       }
       const a = (window.HMS.state.accounts || []).find((x) => x.id === id) || {};
       if (a.role === 'DRH_STAFF' && !centreIds.length) { window.HMS.toast('Tick at least one centre for a DRH staff account', 'danger'); return; }

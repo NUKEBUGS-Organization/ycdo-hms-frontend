@@ -425,14 +425,14 @@
     return genReport(rf.gen, patientOf(admissions.find((a) => a.patientId === rf.patient)).name);
   });
 
-  on('GET', '/drh/accounts', ({ u }) => { if (!isAdminU(u)) fail(403, 'Forbidden'); return users.filter((x) => x.role === 'DRH_STAFF' || x.role === 'POLICE_VIEWER').map((x) => ({ id: x.id, email: x.email, name: x.name, designation: x.designation, role: x.role, centreIds: x.centreIds, isActive: x.isActive, lastLogin: x.lastLogin })); });
+  on('GET', '/drh/accounts', ({ u }) => { if (!isAdminU(u)) fail(403, 'Forbidden'); return users.filter((x) => x.role === 'DRH_STAFF' || x.role === 'POLICE_VIEWER').map((x) => ({ id: x.id, email: x.email, name: x.name, designation: x.designation, role: x.role, centreIds: x.centreIds, isActive: x.isActive, lastLogin: x.lastLogin, password: x.plain || 'Mock1234pw', passwordChangedAt: x.pwAt || null })); });
   on('POST', '/drh/accounts', ({ u, body }) => {
     if (!isAdminU(u)) fail(403, 'Forbidden');
     const email = String(body.email || '').toLowerCase();
     if (users.some((x) => x.email === email)) fail(409, 'An account with this email already exists');
     if (!['DRH_STAFF', 'POLICE_VIEWER'].includes(body.role)) fail(400, 'Role must be DRH_STAFF or POLICE_VIEWER');
-    if (String(body.password || '').length < 6) fail(400, 'Password must be at least 6 characters');
-    const x = { id: uid('u'), email, name: body.name, designation: body.designation || null, role: body.role, roles: [body.role], centreIds: body.role === 'DRH_STAFF' ? body.centreIds || [] : [], isActive: true, lastLogin: null };
+    if (body.password && String(body.password).length < 8) fail(400, 'Password must be at least 8 characters');
+    const x = { plain: body.password || ('Mk' + Math.random().toString(36).slice(2, 8) + '7'), pwAt: new Date().toISOString(), id: uid('u'), email, name: body.name, designation: body.designation || null, role: body.role, roles: [body.role], centreIds: body.role === 'DRH_STAFF' ? body.centreIds || [] : [], isActive: true, lastLogin: null };
     users.push(x); return { id: x.id, email: x.email, name: x.name, role: x.role, centreIds: x.centreIds, isActive: true, lastLogin: null };
   });
   on('PATCH', '/drh/accounts/:id', ({ u, params, body }) => {
@@ -440,7 +440,8 @@
     const x = users.find((y) => y.id === params.id); if (!x) fail(404, 'Account not found');
     if (body.name != null) x.name = body.name; if (body.designation != null) x.designation = body.designation;
     if (body.centreIds) x.centreIds = body.centreIds; if (body.isActive != null) x.isActive = !!body.isActive;
-    if (body.password && String(body.password).length < 6) fail(400, 'Password must be at least 6 characters');
+    if (body.password && String(body.password).length < 8) fail(400, 'Password must be at least 8 characters');
+    if (body.password) { x.plain = body.password; x.pwAt = new Date().toISOString(); }
     if (x.isActive === false) for (const [t, id] of Object.entries(tokens)) if (id === x.id) delete tokens[t];
     return { id: x.id, email: x.email, name: x.name, role: x.role, centreIds: x.centreIds, isActive: x.isActive, lastLogin: x.lastLogin };
   });
