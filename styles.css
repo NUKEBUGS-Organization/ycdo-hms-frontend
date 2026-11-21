@@ -297,3 +297,6 @@ body.loading .loadbar { display: block; }
 .chk { display: flex; gap: 8px; align-items: center; font-size: 13px; }
 .otp-input { font-size: 22px; letter-spacing: .4em; text-align: center; }
 .header .search input { color: #fff; }
+
+/* DRH payments: long category labels wrap instead of widening the page */
+[data-cat] .badge { white-space: normal; max-width: 100%; }

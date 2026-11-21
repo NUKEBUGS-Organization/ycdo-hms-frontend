@@ -2,7 +2,7 @@
    admissions list, patient file (test reports, discharge, weekly follow-up, print), registration
    (CNIC first, two guardians, police referral with station and pick-up place, photo and thumb),
    police station and pick-up place pages, find by thumb, and HMS accounts (YCDO IT only).
-   Real data only. No money anywhere. */
+   Real data only. Payments (DRH staff and YCDO IT only, never police) live in billing.js. */
 (function () {
   const { h } = window.HMS;
   const api = window.API;
@@ -243,7 +243,10 @@
       const id = c.params.id;
       if (!id) return h.page('Patient file') + h.empty('Open a patient from the dashboard or the admissions list');
       const f = await c.cached('adm:' + id, () => api.get(`/drh/admissions/${encodeURIComponent(id)}`));
-      return fileView(f, c.params.tab || 'overview');
+      const tab = c.params.tab || 'overview';
+      // Money: only staff of this centre and YCDO IT; police never ask for it.
+      const b = canBill(f) && (tab === 'payment' || tab === 'discharge') ? await window.HMS.billing.loadBilling(id) : null;
+      return fileView(f, tab, b);
     },
   });
 
@@ -255,12 +258,15 @@
     return Math.max(0, Math.min(MAX_FOLLOW_WEEKS, Math.floor((Date.now() - new Date(f.dischargedAt)) / (7 * DAY))));
   }
 
-  function fileView(f, tab) {
+  const canBill = (f) => !!(window.HMS.billing && canWriteAt(f.centre && f.centre.id));
+
+  function fileView(f, tab, b) {
     const P = f.patient || {}; const w = canWriteAt(f.centre && f.centre.id);
     const reps = reportsOf(f); const fus = followsOf(f); const due = followWeeksDue(f);
     const tabs = h.tabs([
       { id: 'overview', label: 'Overview', href: fileHref(f.id, 'overview') },
       { id: 'reports', label: `Test reports (${reps.length})`, href: fileHref(f.id, 'reports') },
+      ...(canBill(f) ? [{ id: 'payment', label: 'Payment', href: fileHref(f.id, 'payment') }] : []),
       { id: 'discharge', label: 'Discharge', href: fileHref(f.id, 'discharge') },
       { id: 'followup', label: f.status === 'DISCHARGED' ? `Follow-up (${fus.filter((x) => x.status === 'ATTENDED').length}/${due})` : 'Follow-up', href: fileHref(f.id, 'followup') },
     ], tab);
@@ -270,7 +276,8 @@
     const head = h.page(`${P.name} · ${f.fileNo}`, sub, `${h.linkBtn('Admissions', '#/admissions')}${h.btn({ label: 'Print file', action: 'printFile', arg: f.id, size: 'sm', tone: 'accent' })}`);
     const roNote = !me().canWrite ? '' : !w ? h.note(`This file belongs to ${centreShort(f.centre && f.centre.id) || 'another centre'}. You can view it; changes are made by that centre's staff.`, 'info') : '';
     if (tab === 'reports') return head + tabs + roNote + reportsTab(f, w);
-    if (tab === 'discharge') return head + tabs + roNote + dischargeTab(f, w);
+    if (tab === 'payment' && b) return head + tabs + roNote + window.HMS.billing.payTab(f, b, w);
+    if (tab === 'discharge') return head + tabs + roNote + dischargeTab(f, w, b);
     if (tab === 'followup') return head + tabs + roNote + followTab(f, w, due);
     return head + tabs + roNote + overviewTab(f, w);
   }
@@ -343,7 +350,7 @@
     return list + upload;
   }
 
-  function dischargeTab(f, w) {
+  function dischargeTab(f, w, b) {
     const P = f.patient || {}; const reps = reportsOf(f);
     const checks = [
       { label: 'Two guardians on file with phone numbers', ok: (f.guardians || []).length >= 2 && (f.guardians || []).every((g) => g.phone) },
@@ -357,7 +364,7 @@
     let action = '';
     if (f.status === 'DISCHARGED') action = h.note(`Discharged on ${h.date(f.dischargedAt)} — ${outcomeLabel(f.outcome)}.`, 'info');
     else if (w) action = (!ready ? h.note('An early discharge (guardian request, against medical advice or referral) is still possible; the outcome is written on the file.', 'warn') : '')
-      + `<form id="discharge-form" data-form-id="discharge-form" style="margin-top:12px"><div class="form-grid">${h.field({ id: 'outcome', label: 'Outcome', type: 'select', value: def, options: outcomes.map((o) => ({ value: o.value, label: o.label })), required: true })}${h.field({ id: 'note', label: 'Note (optional)', type: 'textarea', placeholder: 'e.g. discharged to father, follow-up every Thursday', span: 2, maxlength: 500 })}</div><div class="row end" style="margin-top:12px">${h.btn({ label: 'Confirm discharge', action: 'dischargeAsk', arg: f.id, form: 'discharge-form' })}</div></form>`;
+      + `<form id="discharge-form" data-form-id="discharge-form" style="margin-top:12px"><div class="form-grid">${h.field({ id: 'outcome', label: 'Outcome', type: 'select', value: def, options: outcomes.map((o) => ({ value: o.value, label: o.label })), required: true })}${h.field({ id: 'note', label: 'Note (optional)', type: 'textarea', placeholder: 'e.g. discharged to father, follow-up every Thursday', span: 2, maxlength: 500 })}</div>${b ? `<div style="margin-top:12px">${window.HMS.billing.dischargeExtra(b)}</div>` : ''}<div class="row end" style="margin-top:12px">${h.btn({ label: 'Confirm discharge', action: 'dischargeAsk', arg: f.id, form: 'discharge-form' })}</div></form>`;
     else action = h.note('Still admitted. Discharge is recorded by the centre staff.', 'info');
     return h.card({ title: 'Discharge checklist', tone: f.status === 'DISCHARGED' || ready ? 'ok' : 'warn', body: `<div class="list">${checks.map((x) => `<div class="item">${h.badge(x.ok ? 'done' : 'pending', x.ok ? 'ok' : 'warn')}<div class="grow">${h.esc(x.label)}</div></div>`).join('')}</div>${action}` })
       + h.card({ title: 'Discharge summary', body: `<div class="row">${h.btn({ label: 'Preview summary', action: 'printFile', arg: f.id, tone: 'secondary' })}<span class="muted small">Prints on YCDO letterhead with the photo, guardians, stay, tests and outcome.</span></div>` });
@@ -615,7 +622,7 @@
       const looked = !!L; const blocked = !!(L && L.openAdmission); const P = L && L.patient;
       const stepState = (i) => (!looked ? (i === 0 ? 'active' : 'todo') : blocked ? (i === 0 ? 'active' : 'todo') : i === 0 ? 'done' : 'active');
       const head = h.page('Register DRH patient', centres.length === 1 ? `Centre: ${centres[0].name}` : 'Choose the centre in step 3', h.linkBtn('Admissions', '#/admissions'))
-        + h.steps([{ label: 'CNIC & identity', state: stepState(0) }, { label: 'Guardians', state: stepState(1) }, { label: 'Source & history', state: stepState(2) }, { label: 'Photo & thumb', state: stepState(3) }]);
+        + h.steps([{ label: 'CNIC & identity', state: stepState(0) }, { label: 'Guardians', state: stepState(1) }, { label: 'Source & history', state: stepState(2) }, { label: 'Photo & thumb', state: stepState(3) }, { label: 'Payment', state: stepState(4) }]);
       if (!centres.length) return head + h.note('Your account is not linked to a centre, so it cannot register patients. Ask YCDO IT to add your centre.', 'warn');
 
       const cnicField = `<div class="form-grid">${h.field({ id: 'cnic', label: 'CNIC', kind: 'cnic', placeholder: '36302-xxxxxxx-x', value: looked ? L.cnic : dv('cnic'), required: true, readonly: looked, autofocus: !looked, hint: 'Look up the CNIC first: a person registered before keeps the same patient number' })}<div class="field"><label>&nbsp;</label>${looked ? h.btn({ label: 'Change CNIC', action: 'regReset', tone: 'secondary' }) : h.btn({ label: 'Look up CNIC', action: 'regLookup', form: 'drh-form' })}</div></div>`;
@@ -670,6 +677,7 @@
           h.field({ id: 'bed', label: 'Ward / bed', placeholder: 'e.g. Ward A · Bed 12', value: dv('bed'), maxlength: 60 }),
         ].join('')}${centres.length === 1 ? `<input type="hidden" name="centreId" value="${h.esc(centres[0].id)}">` : ''}</div>${police}<div style="margin-top:12px">${h.note('A person brought in by police is admitted as a patient, not booked as an accused. The referral number and police station stay on the file and appear in the police reports.', 'info')}</div>` }));
         cards.push(h.card({ title: '4 · Photo & thumb', subtitle: P && hasPhoto(P) && P.thumbAt ? 'Already on the patient record; retake only if they changed' : 'Required before saving: take them now, with the patient here', body: regBio(P) }));
+        cards.push(window.HMS.billing.regCard(dv, src));
       }
       return head + `<form id="drh-form" data-form-id="drh-form" class="stack">${cards.join('')}${looked && !blocked ? `<div class="form-actions">${h.btn({ label: 'Clear form', action: 'regClear', tone: 'secondary' })}${h.btn({ label: 'Save DRH registration', action: 'saveRegistration', form: 'drh-form' })}</div>` : ''}</form>`;
     },
@@ -848,6 +856,8 @@
         if (!t('officerName')) return regFail('enter the name of the police officer who brought the patient', 'officerName');
         if (!t('pickupPlaceId')) return regFail('choose where the police found the patient from the list (or add the place)', 'pickupPlaceId');
       }
+      const money = window.HMS.billing.regBody(t, source);
+      if (money.error) return regFail(money.error, money.field);
       const needPhoto = !(P && hasPhoto(P)); const needThumb = !(P && P.thumbAt);
       if (needPhoto && !r.photo) return regFail('take the patient\'s photo (step 4)');
       if (needThumb && !r.thumbTemplate) return regFail('enrol the patient\'s right thumb (step 4)');
@@ -867,6 +877,7 @@
         source, substance: t('substance') || undefined, useYears: num(t('useYears')), bed: t('bed') || undefined,
         ...(source === 'POLICE' ? { policeReferralNo: t('policeReferralNo'), policeStationId: t('policeStationId'), officerName: t('officerName'), officerRank: t('officerRank') || undefined, officerPhone: t('officerPhone') || undefined, pickupPlaceId: t('pickupPlaceId') } : {}),
         ...(source === 'REFERRAL' && t('referredBy') ? { referredBy: t('referredBy') } : {}),
+        ...money.body,
       };
       let f;
       try { f = await api.post('/drh/admissions', body); }
@@ -969,14 +980,19 @@
     dischargeAsk: async (id, form) => {
       const f = await getFile(id);
       if (!form.outcome) { window.HMS.toast('Choose the outcome', 'danger'); return; }
-      pendingDischarge = { id, outcome: form.outcome, note: String(form.note || '').trim() };
-      window.HMS.modal('Confirm discharge', h.noteHtml(`Discharge <b>${h.esc(f.patient.name)}</b> (${h.esc(f.fileNo)}) on day ${dayOf(f)} — <b>${h.esc(outcomeLabel(form.outcome))}</b>? This cannot be undone. Weekly follow-up starts from today.`, 'warn'),
+      const b = canBill(f) ? await window.HMS.billing.loadBilling(id) : null;
+      const owes = b && !b.isPoliceCase && b.rateSet && b.due > 0;
+      if (owes && !form.dueApprovedBy) { window.HMS.toast(`Blocked: ${window.HMS.billing.pkr(b.due)} is still due. Receive it on the Payment tab, or choose who approved the discharge with money due.`, 'danger'); return; }
+      pendingDischarge = { id, outcome: form.outcome, note: String(form.note || '').trim(), dueApprovedBy: owes ? form.dueApprovedBy : undefined, dueApprovalNote: owes ? String(form.dueApprovalNote || '').trim() || undefined : undefined };
+      const dueTxt = owes ? ` <b>${h.esc(window.HMS.billing.pkr(b.due))}</b> stays due (approved by the ${h.esc(form.dueApprovedBy)}).` : '';
+      window.HMS.modal('Confirm discharge', h.noteHtml(`Discharge <b>${h.esc(f.patient.name)}</b> (${h.esc(f.fileNo)}) on day ${dayOf(f)} — <b>${h.esc(outcomeLabel(form.outcome))}</b>?${dueTxt} This cannot be undone. Weekly follow-up starts from today.`, 'warn'),
         h.btn({ label: 'Yes, discharge', action: 'dischargeConfirm', arg: id, size: 'sm' }));
     },
     dischargeConfirm: async (id) => {
       if (!pendingDischarge || pendingDischarge.id !== id) return;
-      const nf = await api.post(`/drh/admissions/${encodeURIComponent(id)}/discharge`, { outcome: pendingDischarge.outcome, note: pendingDischarge.note || undefined });
-      pendingDischarge = null; window.HMS.closeModal(); window.HMS.state.underCare = {};
+      const pd = pendingDischarge;
+      const nf = await api.post(`/drh/admissions/${encodeURIComponent(id)}/discharge`, { outcome: pd.outcome, note: pd.note || undefined, dueApprovedBy: pd.dueApprovedBy, dueApprovalNote: pd.dueApprovalNote });
+      pendingDischarge = null; window.HMS.closeModal(); window.HMS.state.underCare = {}; window.HMS.dropCached('bill:' + id);
       return fileAfter(nf, `${nf.patient.name} discharged — ${outcomeLabel(nf.outcome).toLowerCase()}`);
     },
     saveFollowUp: async (id, form) => {

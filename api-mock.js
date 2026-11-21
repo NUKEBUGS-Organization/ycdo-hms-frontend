@@ -364,6 +364,7 @@
       if (!body.officerName) fail(400, 'Officer name is required for a police case');
       if (!places.some((x) => x.id === body.pickupPlaceId)) fail(400, 'Pick-up place is required for a police case');
     }
+    billCheck(body);
     const needPhoto = !p || !p.photo; const needThumb = !p || !p.thumbTemplate;
     if (needPhoto && !body.photo) fail(400, 'Photo is required');
     if (needThumb && !body.thumbTemplate) fail(400, 'Thumb is required');
@@ -378,6 +379,7 @@
     ev(a, at, body.source === 'POLICE' ? 'Brought in by police — admitted as a patient' : body.source === 'REFERRAL' ? 'Admitted on referral' : 'Admitted — brought by family',
       body.source === 'POLICE' ? `Referral ${a.policeReferralNo} · ${stationRef(a.policeStationId).name} · found at ${placeRef(a.pickupPlaceId).name}` : body.referredBy || `Guardian: ${g[0].name} (${g[0].relation})`, u.name);
     if (body.photo || body.thumbTemplate) ev(a, at, [body.photo && 'Photo', body.thumbTemplate && 'thumb'].filter(Boolean).join(' and ') + ' captured at registration', null, u.name);
+    if (typeof billCreate === 'function') billCreate(a, body, u.name);
     return file(a);
   });
   const admOr404 = (id) => { const a = admissions.find((x) => x.id === id); if (!a) fail(404, 'Admission not found'); return a; };
@@ -386,6 +388,9 @@
     const a = admOr404(params.id); needWrite(u, a.centreId);
     if (a.status !== 'ADMITTED') fail(409, 'Already discharged');
     if (!META.outcomes.some((o) => o.value === body.outcome)) fail(400, 'Choose the outcome');
+    const bb = bills[a.id]; const due = bb && !bb.isPoliceCase && !bb.unset ? totals(a).due : 0;
+    if (due > 0 && !body.dueApprovedBy) fail(400, `PKR ${due.toLocaleString('en-US')} is still due. A discharge with money due needs the approval of the Founder, Chairman or President: choose who approved it.`);
+    if (due > 0) Object.assign(bb, { dueAtDischarge: due, dueApprovedBy: body.dueApprovedBy, dueApprovalNote: body.dueApprovalNote || null, dueRecordedAt: iso(now()) });
     a.status = 'DISCHARGED'; a.dischargedAt = iso(now()); a.outcome = body.outcome;
     ev(a, a.dischargedAt, 'Discharged', META.outcomes.find((o) => o.value === body.outcome).label + (body.note ? ' · ' + body.note : ''), u.name);
     return file(a);
@@ -444,6 +449,123 @@
     if (body.password) { x.plain = body.password; x.pwAt = new Date().toISOString(); }
     if (x.isActive === false) for (const [t, id] of Object.entries(tokens)) if (id === x.id) delete tokens[t];
     return { id: x.id, email: x.email, name: x.name, role: x.role, centreIds: x.centreIds, isActive: x.isActive, lastLogin: x.lastLogin };
+  });
+
+  /* ── DRH payments (mirror of /drh/billing; police get 403) ── */
+  const bills = {};
+  const PKT = 5 * 3600000;
+  const pktDay = (t) => Math.floor((new Date(t).getTime() + PKT) / DAY);
+  const billDays = (a) => Math.max(1, pktDay(a.dischargedAt || now()) - pktDay(a.admittedAt) + 1);
+  const catOf = (r, pol) => (pol ? 'Police case (free)' : r < 1000 ? 'Zakat-supported (approval required)' : r <= 1500 ? 'Category 3' : r <= 2500 ? 'Category 2' : 'Private patient');
+  let rcptSeq = 0;
+  function billOf(a) { return bills[a.id] || null; }
+  function addPay(a, p, byName, at) {
+    const b = bills[a.id];
+    const c = META.centres.find((x) => x.id === a.centreId);
+    const d = new Date(new Date(at).getTime() + PKT);
+    const no = `RCPT-${c.code}-${String(d.getUTCFullYear()).slice(2)}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}-${String(++rcptSeq).padStart(3, '0')}`;
+    const rec = { id: uid('pay'), receiptNo: no, amount: Number(p.amount), method: p.method || 'CASH', reference: p.reference || null, paidBy: p.paidBy || null, note: p.note || null, receivedAt: at, receivedBy: byName };
+    b.payments.push(rec); return rec;
+  }
+  function addZakat(a, rate, z, byName, at) {
+    bills[a.id].zakat.push({ id: uid('zk'), rate, approver: z.approver, approverPhone: z.approverPhone || null, formStatus: z.formStatus || 'ATTACHED', status: 'PENDING', requestedAt: at, deadline: iso(new Date(at).getTime() + 3 * DAY), requestedBy: byName, decidedAt: null, decisionNote: null, decidedBy: null });
+  }
+  function totals(a) {
+    const b = bills[a.id];
+    const days = billDays(a);
+    const pol = b ? b.isPoliceCase : a.source === 'POLICE';
+    const accrued = b && !pol ? days * b.dailyRate : 0;
+    const received = b ? b.payments.reduce((x, y) => x + y.amount, 0) : 0;
+    return { days, accrued, received, balance: accrued - received, due: Math.max(0, accrued - received) };
+  }
+  function billDetail(a) {
+    const b = bills[a.id] || { dailyRate: null, isPoliceCase: a.source === 'POLICE', payments: [], zakat: [], rateChanges: [] };
+    const pol = b.isPoliceCase; const zs = b.zakat.slice().sort((x, y) => new Date(y.requestedAt) - new Date(x.requestedAt));
+    const set = !!bills[a.id] || pol;
+    return { admissionId: a.id, fileNo: a.fileNo, centre: centreRef(a.centreId), status: a.status, admittedAt: a.admittedAt, dischargedAt: a.dischargedAt, isPoliceCase: pol, rateSet: set, dailyRate: set ? (pol ? 0 : b.dailyRate) : null, category: set ? catOf(b.dailyRate, pol) : null, ...totals(a),
+      rateMustRise: !pol && set && b.dailyRate < 1000 && zs[0] && zs[0].status === 'REJECTED',
+      dueAtDischarge: b.dueAtDischarge || null, dueApprovedBy: b.dueApprovedBy || null, dueApprovalNote: b.dueApprovalNote || null, dueRecordedAt: b.dueRecordedAt || null,
+      payments: b.payments.slice().sort((x, y) => new Date(y.receivedAt) - new Date(x.receivedAt)), zakat: zs.map((z) => ({ ...z, overdue: z.status === 'PENDING' && new Date(z.deadline) < now() })),
+      rateChanges: b.rateChanges.slice().sort((x, y) => new Date(y.at) - new Date(x.at)), limits: { min: 500, max: 3000, zakatBelow: 1000 } };
+  }
+  function needBill(u, centreId) {
+    if (!canWriteU(u)) fail(403, 'Forbidden resource');
+    if (centreId && !writeCentres(u).includes(centreId)) fail(403, 'Payments of this centre are handled by its own staff');
+  }
+  function billCheck(body) {
+    if (body.source === 'POLICE') return;
+    const r = Number(body.dailyRate);
+    if (!body.dailyRate) fail(400, 'Enter the daily rate (PKR 500 to 3,000)');
+    if (r < 500 || r > 3000) fail(400, 'The daily rate must be PKR 500 to 3000');
+    if (r < 1000 && !(body.zakat && body.zakat.approver)) fail(400, 'A daily rate below PKR 1,000 needs a Zakat approval request: choose the approver');
+  }
+  function billCreate(a, body, byName) {
+    const pol = a.source === 'POLICE'; const r = pol ? 0 : Number(body.dailyRate);
+    bills[a.id] = { dailyRate: r, isPoliceCase: pol, payments: [], zakat: [], rateChanges: [{ id: uid('rc'), fromRate: null, toRate: r, reason: pol ? 'Police case: free' : 'Set at registration', byName, at: a.admittedAt }] };
+    if (!pol && r < 1000) addZakat(a, r, body.zakat, byName, a.admittedAt);
+    if (body.deposit && body.deposit.amount) addPay(a, body.deposit, byName, a.admittedAt);
+  }
+  // Seeded admissions: police free, others a mix of rates, some paid
+  (function seedBills() {
+    const rates = [1500, 2500, 800, 1200, 3000, 2000];
+    admissions.forEach((a, i) => {
+      if (i === admissions.length - 1 && a.source !== 'POLICE' && a.status === 'ADMITTED') return; // one file without a rate (registered before payments)
+      const pol = a.source === 'POLICE'; const r = pol ? 0 : rates[i % rates.length];
+      billCreate(a, { dailyRate: r, zakat: { approver: 'Chairman', formStatus: 'ATTACHED' } }, 'Muhammad Kashif');
+      const t = totals(a);
+      if (!pol && i % 3 !== 2) addPay(a, { amount: Math.round((t.accrued * (i % 2 ? 1 : 0.6)) / 100) * 100 || 1000, method: i % 2 ? 'CASH' : 'MOBILE_WALLET', paidBy: 'Guardian' }, 'Muhammad Kashif', iso(new Date(a.admittedAt).getTime() + DAY));
+      if (pol && i % 4 === 0) addPay(a, { amount: 2000, method: 'CASH', paidBy: 'Father', note: 'Voluntary contribution' }, 'Muhammad Kashif', iso(new Date(a.admittedAt).getTime() + 2 * DAY));
+    });
+  })();
+
+  on('GET', '/drh/billing/summary', ({ u, query }) => {
+    needBill(u);
+    let ids = writeCentres(u); if (query.centreId && query.centreId !== 'all') { needBill(u, query.centreId); ids = [query.centreId]; }
+    const list = admissions.filter((a) => ids.includes(a.centreId));
+    const pick = (a) => ({ id: a.id, fileNo: a.fileNo, status: a.status, source: a.source, admittedAt: a.admittedAt, dischargedAt: a.dischargedAt, centre: centreRef(a.centreId), patient: { id: a.patientId, name: patientOf(a).name, patientNo: patientOf(a).patientNo } });
+    const rows = list.map((a) => ({ ...pick(a), dailyRate: bills[a.id] ? bills[a.id].dailyRate : null, isPoliceCase: a.source === 'POLICE', rateSet: !!bills[a.id] || a.source === 'POLICE', dueApprovedBy: (bills[a.id] || {}).dueApprovedBy || null, ...totals(a) }));
+    const pays = list.flatMap((a) => (bills[a.id] ? bills[a.id].payments.map((p) => ({ ...p, admission: pick(a) })) : [])).sort((x, y) => new Date(y.receivedAt) - new Date(x.receivedAt));
+    const zp = list.flatMap((a) => (bills[a.id] ? bills[a.id].zakat.filter((z) => z.status === 'PENDING').map((z) => ({ ...z, overdue: new Date(z.deadline) < now(), admission: pick(a) })) : []));
+    const today = pktDay(now()); const month = iso(now()).slice(0, 7);
+    const open = rows.filter((r) => r.status === 'ADMITTED' && r.due > 0).sort((x, y) => y.due - x.due);
+    const aft = rows.filter((r) => r.status === 'DISCHARGED' && r.due > 0).sort((x, y) => y.due - x.due);
+    const tp = pays.filter((p) => pktDay(p.receivedAt) === today); const mp = pays.filter((p) => String(p.receivedAt).slice(0, 7) === month);
+    return { centreIds: ids, totals: { receivableUnderCare: open.reduce((x, r) => x + r.due, 0), receivableAfterDischarge: aft.reduce((x, r) => x + r.due, 0), receivedToday: tp.reduce((x, p) => x + p.amount, 0), paymentsToday: tp.length, receivedThisMonth: mp.reduce((x, p) => x + p.amount, 0), paymentsThisMonth: mp.length, zakatPending: zp.length, zakatOverdue: zp.filter((z) => z.overdue).length, rateNotSet: rows.filter((r) => r.status === 'ADMITTED' && !r.rateSet).length },
+      underCare: open, afterDischarge: aft, rateNotSet: rows.filter((r) => r.status === 'ADMITTED' && !r.rateSet), zakatPending: zp, recentPayments: pays.slice(0, 25) };
+  });
+  on('POST', '/drh/billing/zakat/:id/decision', ({ u, params, body }) => {
+    needBill(u);
+    const a = admissions.find((x) => bills[x.id] && bills[x.id].zakat.some((z) => z.id === params.id)); if (!a) fail(404, 'Zakat request not found');
+    needBill(u, a.centreId);
+    const z = bills[a.id].zakat.find((y) => y.id === params.id);
+    if (z.status !== 'PENDING') fail(409, 'This request was already decided');
+    if (body.decision === 'REJECTED' && !body.note) fail(400, 'Write the reason the request was rejected');
+    Object.assign(z, { status: body.decision, decidedAt: iso(now()), decidedBy: u.name, decisionNote: body.note || null });
+    return billDetail(a);
+  });
+  on('GET', '/drh/billing/:id', ({ u, params }) => { needBill(u); const a = admOr404(params.id); needBill(u, a.centreId); return billDetail(a); });
+  on('POST', '/drh/billing/:id/payments', ({ u, params, body }) => {
+    needBill(u); const a = admOr404(params.id); needBill(u, a.centreId);
+    if (!(Number(body.amount) >= 1)) fail(400, 'amount must not be less than 1');
+    if (!bills[a.id]) bills[a.id] = { dailyRate: 0, isPoliceCase: a.source === 'POLICE', payments: [], zakat: [], rateChanges: [], unset: true };
+    const p = addPay(a, body, u.name, iso(now()));
+    const out = billDetail(a); if (bills[a.id].unset) out.rateSet = a.source === 'POLICE';
+    return { receiptNo: p.receiptNo, billing: out };
+  });
+  on('PATCH', '/drh/billing/:id/rate', ({ u, params, body }) => {
+    needBill(u); const a = admOr404(params.id); needBill(u, a.centreId);
+    if (a.source === 'POLICE') fail(400, 'Police cases are free: there is no daily rate');
+    const r = Number(body.dailyRate); if (r < 500 || r > 3000) fail(400, 'dailyRate must not be less than 500');
+    if (!body.reason) fail(400, 'reason must be longer than or equal to 3 characters');
+    if (r < 1000 && !(body.zakat && body.zakat.approver)) fail(400, 'A daily rate below PKR 1,000 needs a Zakat approval request: choose the approver');
+    const at = iso(now());
+    if (!bills[a.id]) bills[a.id] = { dailyRate: null, isPoliceCase: false, payments: [], zakat: [], rateChanges: [] };
+    const b = bills[a.id]; delete b.unset;
+    b.rateChanges.push({ id: uid('rc'), fromRate: b.dailyRate, toRate: r, reason: body.reason, byName: u.name, at });
+    b.dailyRate = r;
+    for (const z of b.zakat) if (z.status === 'PENDING') Object.assign(z, { status: 'CANCELLED', decidedAt: at, decidedBy: u.name, decisionNote: `Rate changed to PKR ${r}` });
+    if (r < 1000) addZakat(a, r, body.zakat, u.name, at);
+    return billDetail(a);
   });
 
   async function handle(method, path, opts) {

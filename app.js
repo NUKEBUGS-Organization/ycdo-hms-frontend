@@ -178,7 +178,7 @@
     const items = [
       { id: 'dashboard', label: 'Dashboard' },
       { id: 'admissions', label: 'Admissions' },
-      ...(me.canWrite ? [{ id: 'register', label: 'Register patient' }] : []),
+      ...(me.canWrite ? [{ id: 'register', label: 'Register patient' }, { id: 'payments', label: 'Payments' }] : []),
       { id: 'stations', label: 'Police stations', group: 'Police' },
       { id: 'places', label: 'Pick-up places' },
       ...(me.isAdmin ? [{ id: 'accounts', label: 'HMS accounts', group: 'Admin' }] : []),
