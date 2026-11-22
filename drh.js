@@ -60,10 +60,15 @@
   const hasThumb = (p) => (p && (p.thumbAt || p.hasThumb) ? true : p && p.hasThumb === false ? false : null);
   const avatar = (p, size) => bio().avatar(hasPhoto(p) ? { name: p.name, photoId: p.id } : { name: p && p.name }, size);
 
-  function photoThumbBadge(p) {
+  /* Photo and thumb are due within 24 hours of registration (owner, 22 Nov 2026). */
+  function photoThumbBadge(p, admittedAt) {
     const miss = [];
     if (!hasPhoto(p)) miss.push('photo');
     if (hasThumb(p) === false) miss.push('thumb');
+    if (miss.length && admittedAt) {
+      const left = Math.ceil((new Date(admittedAt).getTime() + DAY - Date.now()) / 3600000);
+      return left < 0 ? h.badge(`${miss.join(' & ')} overdue ${Math.abs(left)} h`, 'danger') : h.badge(`${miss.join(' & ')} · ${left} h left`, left <= 6 ? 'danger' : 'warn');
+    }
     if (miss.length) return h.badge(`${miss.join(' & ')} pending`, 'danger');
     return h.badge(hasThumb(p) ? 'complete' : 'photo on file', 'ok');
   }
@@ -171,7 +176,7 @@
       + h.card({ title: `Under care now (${h.num(K.underCare)})`, actions: K.underCare > under.length ? h.linkBtn('Open full list', L({ status: 'ADMITTED' }, 'Under care now')) : '', body: h.table({
         columns: [colPatientPlain, ...(isAll ? [colCentre] : []), colSource, colSubstance, colAdmitted,
           { key: 'bed', label: 'Bed', render: (r) => h.esc(r.bed || '—') },
-          { key: 'pt', label: 'Photo & thumb', render: (r) => photoThumbBadge(r.patient) },
+          { key: 'pt', label: 'Photo & thumb', render: (r) => photoThumbBadge(r.patient, r.admittedAt) },
           { key: 'rp', label: 'Tests', render: (r) => reportsBadge(r.reports) }],
         rows: under, rowHref: (r) => fileHref(r.id), empty: 'No patients under care yet. Registered admissions appear here.' }) });
   }
@@ -182,7 +187,7 @@
         { key: 'src', label: 'Source', render: (r) => sourceBadge(r.source) },
         { key: 'day', label: 'Day', align: 'right', render: (r) => h.num(dayOf(r)) },
         { key: 'sub', label: 'Substance', render: (r) => h.esc(r.substance || '') },
-        { key: 'pt', label: 'Photo & thumb', render: (r) => photoThumbBadge(r.patient) },
+        { key: 'pt', label: 'Photo & thumb', render: (r) => photoThumbBadge(r.patient, r.admittedAt) },
         { key: 'rp', label: 'Tests', render: (r) => reportsBadge(r.reports) }],
       rows: needs, rowHref: (r) => fileHref(r.id), empty: 'Nothing pending — every admitted patient is enrolled and tested' }) });
   }
@@ -676,7 +681,7 @@
           h.field({ id: 'useYears', label: 'Years of use', type: 'number', min: 0, max: 60, value: dv('useYears') }),
           h.field({ id: 'bed', label: 'Ward / bed', placeholder: 'e.g. Ward A · Bed 12', value: dv('bed'), maxlength: 60 }),
         ].join('')}${centres.length === 1 ? `<input type="hidden" name="centreId" value="${h.esc(centres[0].id)}">` : ''}</div>${police}<div style="margin-top:12px">${h.note('A person brought in by police is admitted as a patient, not booked as an accused. The referral number and police station stay on the file and appear in the police reports.', 'info')}</div>` }));
-        cards.push(h.card({ title: '4 · Photo & thumb', subtitle: P && hasPhoto(P) && P.thumbAt ? 'Already on the patient record; retake only if they changed' : 'Required before saving: take them now, with the patient here', body: regBio(P) }));
+        cards.push(h.card({ title: '4 · Photo & thumb', subtitle: P && hasPhoto(P) && P.thumbAt ? 'Already on the patient record; retake only if they changed' : 'Take them now if the patient is here; otherwise they are due within 24 hours of registration (from the patient file)', body: regBio(P) }));
         cards.push(window.HMS.billing.regCard(dv, src));
       }
       return head + `<form id="drh-form" data-form-id="drh-form" class="stack">${cards.join('')}${looked && !blocked ? `<div class="form-actions">${h.btn({ label: 'Clear form', action: 'regClear', tone: 'secondary' })}${h.btn({ label: 'Save DRH registration', action: 'saveRegistration', form: 'drh-form' })}</div>` : ''}</form>`;
@@ -690,8 +695,8 @@
     const dup = r.thumbDup;
     const av = photo ? bio().avatar({ name: r.name || (P && P.name) || 'New patient', photo }, 60) : photoOnFile ? avatar(P, 60) : bio().avatar({ name: r.name || (P && P.name) || 'New patient' }, 60);
     return `<div class="bio-row">
-      <div class="bio-tile">${av}<div class="grow"><b>Photo</b> <span class="req" style="color:var(--danger)">${photo || photoOnFile ? '' : '*'}</span><div class="muted small">${photo ? 'Captured now on the webcam' : photoOnFile ? 'Already on the patient record' : 'Not taken yet'}</div></div>${h.btn({ label: photo || photoOnFile ? 'Retake' : 'Take photo', action: 'regPhoto', size: 'sm', tone: photo || photoOnFile ? 'secondary' : '' })}</div>
-      <div class="bio-tile"><div class="bio-fp" style="width:60px;height:80px">${r.thumbImage ? `<img src="${h.esc(r.thumbImage)}" alt="">` : '<div class="bio-fp-empty" style="font-size:28px">👍</div>'}</div><div class="grow"><b>Right thumb</b> <span class="req" style="color:var(--danger)">${thumb || thumbOnFile ? '' : '*'}</span><div class="muted small">${thumb ? 'Enrolled now on the fingerprint reader' : thumbOnFile ? 'Already on the patient record' : 'Not enrolled yet'}</div></div>${h.btn({ label: thumb || thumbOnFile ? 'Enrol again' : 'Enrol thumb', action: 'regThumb', size: 'sm', tone: thumb || thumbOnFile ? 'secondary' : '' })}</div>
+      <div class="bio-tile">${av}<div class="grow"><b>Photo</b><div class="muted small">${photo ? 'Captured now on the webcam' : photoOnFile ? 'Already on the patient record' : 'Not taken yet'}</div></div>${h.btn({ label: photo || photoOnFile ? 'Retake' : 'Take photo', action: 'regPhoto', size: 'sm', tone: photo || photoOnFile ? 'secondary' : '' })}</div>
+      <div class="bio-tile"><div class="bio-fp" style="width:60px;height:80px">${r.thumbImage ? `<img src="${h.esc(r.thumbImage)}" alt="">` : '<div class="bio-fp-empty" style="font-size:28px">👍</div>'}</div><div class="grow"><b>Right thumb</b><div class="muted small">${thumb ? 'Enrolled now on the fingerprint reader' : thumbOnFile ? 'Already on the patient record' : 'Not enrolled yet'}</div></div>${h.btn({ label: thumb || thumbOnFile ? 'Enrol again' : 'Enrol thumb', action: 'regThumb', size: 'sm', tone: thumb || thumbOnFile ? 'secondary' : '' })}</div>
     </div>`
       + (dup ? `<div style="margin-top:12px">${h.noteHtml(`<b>This thumb is already enrolled for ${h.esc(dup.name || 'another patient')}${dup.patientNo ? ' (' + h.esc(dup.patientNo) + ')' : ''}${dup.cnic ? ', CNIC ' + h.esc(dup.cnic) : ''}.</b> The same person cannot be registered twice — press “Change CNIC” and look up that patient's CNIC, or enrol the thumb again if this was a mistake.`, 'danger')}</div>` : '')
       + '<div class="muted small" style="margin-top:10px">Photo: workstation webcam. Thumb: ZKTeco USB fingerprint reader (Live10R / ZK9500) through the fingerprint service on this computer.</div>';
@@ -858,9 +863,8 @@
       }
       const money = window.HMS.billing.regBody(t, source);
       if (money.error) return regFail(money.error, money.field);
-      const needPhoto = !(P && hasPhoto(P)); const needThumb = !(P && P.thumbAt);
-      if (needPhoto && !r.photo) return regFail('take the patient\'s photo (step 4)');
-      if (needThumb && !r.thumbTemplate) return regFail('enrol the patient\'s right thumb (step 4)');
+      // Photo and thumb may follow within 24 hours (owner, 22 Nov 2026).
+      const bioDue = [!(P && hasPhoto(P)) && !r.photo && 'photo', !(P && P.thumbAt) && !r.thumbTemplate && 'thumb'].filter(Boolean);
       if (r.thumbTemplate) {
         let dup = r.thumbDup;
         try { dup = await thumbOwner(r.thumbTemplate, P ? P.id : null); } catch (e) { /* keep the earlier check */ }
@@ -887,6 +891,7 @@
       if (f && f.patient && f.patient.id) dropPhoto(f.patient.id);
       TA.stations = null; TA.places = null;
       location.hash = fileHref(f.id);
+      if (bioDue.length) { window.HMS.toast(`${f.fileNo} registered. ${bioDue.join(' and ')} still pending: take ${bioDue.length > 1 ? 'them' : 'it'} on the patient file within 24 hours.`, 'warn'); return; }
       return `${f.fileNo} registered at ${(f.centre && f.centre.name) || 'the centre'}`;
     },
 

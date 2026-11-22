@@ -365,9 +365,7 @@
       if (!places.some((x) => x.id === body.pickupPlaceId)) fail(400, 'Pick-up place is required for a police case');
     }
     billCheck(body);
-    const needPhoto = !p || !p.photo; const needThumb = !p || !p.thumbTemplate;
-    if (needPhoto && !body.photo) fail(400, 'Photo is required');
-    if (needThumb && !body.thumbTemplate) fail(400, 'Thumb is required');
+    // Photo and thumb may follow within 24 hours (owner, 22 Nov 2026).
     if (body.thumbTemplate) { const other = patients.find((x) => x.thumbTemplate === body.thumbTemplate && (!p || x.id !== p.id)); if (other) fail(409, `This thumb is already enrolled for ${other.name} (${other.patientNo})`); }
     const at = iso(now());
     if (!p) { const np = body.patient; p = addPatient({ name: np.name, fatherName: np.fatherName, gender: np.gender || 'MALE', age: Number(np.age) || null, cnic: np.cnic, phone: np.phone || '', address: np.address || '', area: np.area || '' }); }
