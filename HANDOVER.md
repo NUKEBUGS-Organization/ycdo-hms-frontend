@@ -17,6 +17,8 @@ No passwords, tokens or patient data are in this file. Ask the owner for access.
 
 ## 1. Where things stand
 
+- HMS is being built in phases from the clickable prototype (section 7, last item), which designs the whole hospital system. **Phase 0 = DRH only** and is live.
+
 - `main` holds all HMS work: `69ef2cdd` (DRH module, police dashboard, payments) and `2ac82e4c` (photo and thumb within 24 hours). Later commits are HRMS/FMS.
 - Live (checked 22 Nov 2026): `hrms-api` version 458, `hms-web` version 6. Staff are using it: real patients and payments are in the database.
 - Checked live on 22 Nov: a police login sees no Payment menu, tab or amount, and `/drh/billing` and `/drh/accounts` return 403 for it. A staff login can register, sees the 24-hour wording and the Payments page.
@@ -114,4 +116,4 @@ Owner's decisions still open:
 Other:
 - Training videos (captioned, mock data): `DRH-staff-guide.mp4`, `Police-view-guide.mp4`, kept by the owner outside the repo.
 - Copies of HMS code: `NUKEBUGS-Organization/ycdo-hms-backend` (private, `apps/api`) and `ycdo-hms-frontend` (public, `apps/hms`). They are copies of this repo. Never push `apps/api/uploads/` (staff letters) or `apps/api/src/modules/daily-reports/fixtures/` (real hospital PDFs) there. The old history of the frontend repo contains a malware file `api/init` (commit `989c082` and earlier): do not check out those commits.
-- The clickable prototype that HMS was built from is a separate local folder (`ycdo-hms`, the CPO/DC demo). It is reference only.
+- **The prototype is the design of the whole HMS**: https://github.com/NUKEBUGS-Organization/ycdo-hms-prototype (private). Phase 0 built only its DRH part as real software; Reception, Doctor, Lab, Pharmacy, Central Store, Finance, HR Admin, Reports, Audit and the mobile screens are still to be built from it in later phases. Branch `main` is the full design; `demo-cpo-dc-nov-2026` is the build shown to the CPO and the DC (no money, two DRH branch tabs) and is for demos only. Where the live DRH differs from the prototype, the live system and the owner's decisions above win.
